@@ -47,6 +47,14 @@ mod provider_defaults {
     }
 
     #[test]
+    fn mimo_defaults() {
+        let r = Request::new(Provider::Mimo, "sk-test");
+        assert_eq!(r.provider, Provider::Mimo);
+        assert_eq!(r.model, "mimo-v2.5-pro");
+        assert_eq!(r.base_url, "https://api.xiaomimimo.com/anthropic");
+    }
+
+    #[test]
     fn effective_base_url_uses_default_when_none() {
         let r = Request::new(Provider::DeepSeek, "k");
         assert_eq!(r.effective_base_url(), "https://api.deepseek.com");
@@ -175,6 +183,10 @@ mod provider_enum {
             Provider::Gemini.default_base_url(),
             "https://generativelanguage.googleapis.com/v1beta"
         );
+        assert_eq!(
+            Provider::Mimo.default_base_url(),
+            "https://api.xiaomimimo.com/anthropic"
+        );
     }
 
     #[test]
@@ -186,6 +198,7 @@ mod provider_enum {
             "claude-sonnet-4-20250514"
         );
         assert_eq!(Provider::Gemini.default_model(), "gemini-2.0-flash");
+        assert_eq!(Provider::Mimo.default_model(), "mimo-v2.5-pro");
     }
 
     #[test]

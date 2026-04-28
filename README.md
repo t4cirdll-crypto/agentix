@@ -4,42 +4,19 @@
 [![docs.rs](https://docs.rs/agentix/badge.svg)](https://docs.rs/agentix)
 [![license](https://img.shields.io/crates/l/agentix.svg)](LICENSE)
 
-Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, agentic loops, and MCP support.
+Multi-provider LLM client for Rust: streaming, non-streaming, tool calls,
+agent loops, MCP tools, structured output, multimodal input, and reasoning
+state round-trip.
 
-DeepSeek · OpenAI · Anthropic · Gemini · Kimi · GLM · MiniMax · Grok · OpenRouter — one unified API.
-
----
-
-### Philosophy: Stream as Agent Structure
-
-> An agent is not an object. It is a **Stream**.
-
-agentix models agents as lazy, composable streams rather than stateful objects or DAG frameworks:
-
-```rust
-// token-level stream — full control, live progress
-let mut stream = agent(tools, http, request, history, None);
-while let Some(event) = stream.next().await { ... }
-
-// turn-level stream — one CompleteResponse per LLM turn
-let result = agent_turns(tools, http, request, history, None)
-    .last_content().await;
-
-// multi-agent pipeline — just Rust concurrency
-let findings = join_all(questions.iter().map(|q| {
-    agent_turns(tools.clone(), http.clone(), request.clone(), vec![q], None)
-        .last_content()
-})).await;
-```
-
-Concurrency is `join_all`. Pipelines are sequential `.await`. No orchestrator, no DAG, no magic — just streams composed with ordinary Rust.
+DeepSeek, OpenAI, Anthropic, Gemini, Kimi, GLM, MiniMax, Mimo, Grok, and
+OpenRouter all use the same `Request` API.
 
 ---
 
 ## Quick Start
 
 ```rust
-use agentix::{Request, LlmEvent};
+use agentix::{LlmEvent, Request};
 use futures::StreamExt;
 
 #[tokio::main]
@@ -55,71 +32,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(event) = stream.next().await {
         match event {
             LlmEvent::Token(t) => print!("{t}"),
-            LlmEvent::Done     => break,
+            LlmEvent::Done => break,
+            LlmEvent::Error(e) => eprintln!("error: {e}"),
             _ => {}
         }
     }
-    println!();
+
     Ok(())
 }
 ```
 
----
-
-## vs. other frameworks
-
-| | agentix | rig | llm-chain | LangGraph |
-|---|---|---|---|---|
-| Language | Rust | Rust | Rust | Python |
-| Agentic loop | ✅ `agent()` | manual | manual | ✅ graph nodes |
-| Multi-agent pipeline | ✅ `join_all` + streams | manual | manual | ✅ graph edges |
-| Streaming tokens | ✅ | ✅ | ❌ | ✅ |
-| Streaming tool calls | ✅ | ❌ | ❌ | ❌ |
-| MCP support | ✅ | ❌ | ❌ | ✅ (partial) |
-| Proc-macro tools | ✅ `#[tool]` | ✅ `#[rig_tool]` | ❌ | ❌ |
-| Concurrent tool execution | ✅ | ❌ | ❌ | ✅ |
-| Provider support | 8 | 10+ | 4 | 30+ |
-| Agent abstraction | Stream | Object | Chain | DAG |
-
-**vs LangGraph**: LangGraph models agents as DAGs with explicit nodes and edges. agentix models them as Streams — no graph definition, no state schema, no framework lock-in. Multi-agent pipelines are just `join_all` and sequential `.await`.
-
-**vs rig's `#[rig_tool]`**: rig requires one annotated function per tool, with descriptions passed as attribute arguments and return type fixed to `Result<T, ToolError>`. agentix uses doc comments for descriptions, accepts any return type, and lets you group related tools in a single `impl` block with shared state:
+For one-shot requests:
 
 ```rust
-// rig: one #[rig_tool] per function
-#[rig_tool(
-    description = "Add two numbers",
-    params(a = "first number", b = "second number")
-)]
-fn add(a: i32, b: i32) -> Result<i32, rig::tool::ToolError> { Ok(a + b) }
+let http = reqwest::Client::new();
+let response = agentix::Request::openai(std::env::var("OPENAI_API_KEY")?)
+    .user("Write a haiku about Rust.")
+    .complete(&http)
+    .await?;
 
-#[rig_tool(
-    description = "Multiply two numbers",
-    params(a = "first number", b = "second number")
-)]
-fn multiply(a: i32, b: i32) -> Result<i32, rig::tool::ToolError> { Ok(a * b) }
-
-// agentix: one #[tool] for the whole impl block, descriptions from doc comments
-struct MathTools { precision: u8 }  // shared state across all methods
-
-#[tool]
-impl Tool for MathTools {
-    /// Add two numbers.
-    /// a: first number  b: second number
-    async fn add(&self, a: f64, b: f64) -> f64 { ... }
-
-    /// Multiply two numbers.
-    /// a: first number  b: second number
-    async fn multiply(&self, a: f64, b: f64) -> f64 { ... }
-}
-
-// standalone fn also works — doc comment = description
-/// Square root of x.
-/// x: input value
-#[tool]
-async fn sqrt(x: f64) -> f64 { x.sqrt() }
-
-let bundle = sqrt + MathTools { precision: 4 };  // compose with +
+println!("{}", response.content.unwrap_or_default());
 ```
 
 ---
@@ -128,301 +60,402 @@ let bundle = sqrt + MathTools { precision: 4 };  // compose with +
 
 ```toml
 [dependencies]
-agentix = "0.18.2"
+agentix = "0.22.0"
+```
 
-# Optional: Model Context Protocol (MCP) tool support
-# agentix = { version = "0.18.2", features = ["mcp"] }
+Optional features:
 
-# Optional: drive `claude -p` as the agentic loop using a Claude Max OAuth session
-# agentix = { version = "0.18.2", features = ["claude-code"] }
+```toml
+# MCP client tools
+agentix = { version = "0.22.0", features = ["mcp"] }
+
+# Expose local tools as an MCP server
+agentix = { version = "0.22.0", features = ["mcp-server"] }
+
+# Use the local `claude -p` CLI as Provider::ClaudeCode
+agentix = { version = "0.22.0", features = ["claude-code"] }
+
+# Compile-time gate for full request/response body logging
+agentix = { version = "0.22.0", features = ["sensitive-logs"] }
 ```
 
 ---
 
-## Logging Full Request / Response Bodies
+## Design
 
-Full request bodies, response bodies, streaming chunks, and MCP raw request bodies are treated as sensitive and are disabled by default.
+`Request` is a value type. It contains provider, credentials, model, messages,
+tools, and tuning knobs. Call `stream()` or `complete()` with a shared
+`reqwest::Client`.
 
-To enable them, you must opt in at both compile time and runtime:
+Agents are streams too. `agent()` emits token-level `AgentEvent`s across a full
+LLM/tool loop; `agent_turns()` emits one `CompleteResponse` per LLM turn.
 
-```bash
-AGENTIX_LOG_BODIES=1 cargo run --features sensitive-logs
+```rust
+use agentix::{ToolBundle, agent_turns};
+
+let text = agent_turns(ToolBundle::default(), http, request, history, Some(25_000))
+    .last_content()
+    .await;
 ```
 
-If either one is missing, agentix will not print full bodies.
+Concurrency and pipelines are ordinary Rust:
 
-- Compile-time gate: `sensitive-logs`
-- Runtime gate: `AGENTIX_LOG_BODIES=1`
+```rust
+use futures::future::join_all;
 
-This affects:
+let answers = join_all(questions.into_iter().map(|question| {
+    agentix::agent_turns(
+        tools.clone(),
+        http.clone(),
+        request.clone(),
+        vec![agentix::Message::User(vec![agentix::Content::text(question)])],
+        None,
+    )
+    .last_content()
+}))
+.await;
+```
 
-- outbound HTTP request bodies
-- non-streaming HTTP response bodies
-- raw SSE streaming chunks
-- MCP raw HTTP request bodies
+---
+
+## Comparison
+
+This is a positioning snapshot, not a benchmark. External frameworks move
+quickly; the agentix column tracks this repository's current behavior.
+
+| | agentix | rig | llm-chain | LangGraph |
+|---|---|---|---|---|
+| Primary language | Rust | Rust | Rust | Python / JavaScript |
+| Core abstraction | `Request` values and streams | Agents, providers, embeddings, vector stores | Chains / prompts | Stateful graph runtime |
+| Agent loop | Built in: `agent()` / `agent_turns()` | Built in agent APIs | Manual / chain-oriented | Built in graph execution |
+| Streaming text | Yes: `LlmEvent::Token` | Yes | Limited / provider-dependent | Yes |
+| Streaming tool calls | Yes: chunks + completed calls | Provider/API-dependent | Limited | Yes, through LangGraph stream modes |
+| Streaming tool progress | Yes: `ToolOutput::Progress` -> `AgentEvent::ToolProgress` | Custom app logic | Custom app logic | Yes, custom stream updates |
+| Tool definition style | `#[tool]` on functions or impl blocks | Tool traits / derive macros | Chain/tool abstractions | LangChain tools or custom node logic |
+| Tool grouping | `ToolBundle`, `+`, `+=`, `-`, `-=` | Agent/tool composition | Chain composition | Graph nodes / tool nodes |
+| Multimodal input | Text, images, documents where provider supports them | Provider-dependent | Provider-dependent | Provider-dependent via model integrations |
+| Structured output | JSON object + JSON Schema where provider supports it | Supported patterns vary by provider | Provider-dependent | Via model/tool integrations |
+| Reasoning controls | Cross-provider `ReasoningEffort` | Provider-specific | Provider-specific | Provider/model-specific |
+| Provider support | 10 HTTP providers + optional Claude Code CLI | Multiple native provider integrations | Older/smaller provider surface | Broad via LangChain ecosystem |
+| MCP client tools | Optional `mcp` feature | Not core | Not core | Via integrations / custom nodes |
+| MCP server | Optional `mcp-server` feature | Not core | Not core | Via integrations / deployment stack |
+
+Why this table matters: agentix is intentionally not a graph framework. It keeps
+provider calls, tool execution, and agent turns as regular Rust values and
+streams, so complex workflows can be built with ordinary `async`, `Stream`, and
+`Future` composition.
 
 ---
 
 ## Providers
 
-Nine built-in providers, all using the same API:
+Ten HTTP providers are built in. `Provider::ClaudeCode` is also available behind
+the `claude-code` feature.
+
+| Provider | Constructor | Default model | Default base URL | Wire format |
+|---|---|---|---|---|
+| DeepSeek | `Request::deepseek(key)` | `deepseek-chat` | `https://api.deepseek.com` | Chat Completions-compatible |
+| OpenAI | `Request::openai(key)` | `gpt-4o` | `https://api.openai.com/v1` | Responses API |
+| Anthropic | `Request::anthropic(key)` | `claude-sonnet-4-20250514` | `https://api.anthropic.com` | Messages API |
+| Gemini | `Request::gemini(key)` | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta` | Gemini API |
+| Kimi | `Request::kimi(key)` | `kimi-k2.5` | `https://api.moonshot.cn/v1` | Chat Completions-compatible |
+| GLM | `Request::glm(key)` | `glm-5` | `https://open.bigmodel.cn/api/paas/v4` | Chat Completions-compatible |
+| MiniMax | `Request::minimax(key)` | `MiniMax-M2.7` | `https://api.minimaxi.com/anthropic` | Anthropic-compatible |
+| Mimo | `Request::mimo(key)` | `mimo-v2.5-pro` | `https://api.xiaomimimo.com/anthropic` | Anthropic-compatible |
+| Grok | `Request::grok(key)` | `grok-4` | `https://api.x.ai/v1` | Chat Completions-compatible |
+| OpenRouter | `Request::openrouter(key)` | `openrouter/auto` | `https://openrouter.ai/api/v1` | Chat Completions-compatible |
 
 ```rust
-use agentix::Request;
+use agentix::{Provider, Request};
 
-// Shortcut constructors (provider + default model in one call)
-let req = Request::deepseek("sk-...");
-let req = Request::openai("sk-...");
-let req = Request::anthropic("sk-ant-...");
-let req = Request::gemini("AIza...");
-let req = Request::kimi("...");       // Moonshot AI — kimi-k2.5
-let req = Request::glm("...");        // Zhipu AI — glm-5
-let req = Request::minimax("...");    // MiniMax — MiniMax-M2.7 (Anthropic API)
-let req = Request::grok("xai-...");
-let req = Request::openrouter("sk-or-..."); // OpenRouter with prompt caching support
-
-// For OpenAI-compatible endpoints (Azure, vLLM, LocalAI, Ollama, etc.),
-// route through `Provider::OpenRouter` with a custom base URL —
-// `Provider::OpenAI` exclusively targets `/v1/responses` and won't work
-// against servers that only speak Chat Completions.
-let req = Request::openrouter("sk-or-...")
-    .base_url("https://openrouter.ai/api/v1")
-    .model("openrouter/free");
+let req = Request::new(Provider::Mimo, std::env::var("MIMO_API_KEY")?)
+    .model("mimo-v2.5")
+    .user("Hello");
 ```
 
-**OpenAI specifically** uses the [Responses API](https://platform.openai.com/docs/api-reference/responses) — reasoning summaries surface via `LlmEvent::Reasoning`, `encrypted_content` round-trips automatically for multi-turn tool loops, and `UsageStats.reasoning_tokens` tracks hidden-reasoning cost. Non-official OpenAI endpoints should use `Provider::OpenRouter`.
+OpenAI is intentionally the official Responses API provider. For Azure, vLLM,
+LocalAI, Ollama, llama.cpp server, or any endpoint that only speaks Chat
+Completions, use `Provider::OpenRouter` with a custom base URL:
+
+```rust
+let req = Request::openrouter("local-key")
+    .base_url("http://localhost:11434/v1")
+    .model("llama3.1");
+```
+
+Mimo uses the documented `api-key: $MIMO_API_KEY` authentication header.
 
 ---
 
 ## Request API
 
-`Request` is a self-contained value type — it carries provider, credentials, model,
-messages, tools, and tuning. Call `stream()` or `complete()` with a shared `reqwest::Client`.
-
-### `stream()` — streaming completion
-
 ```rust
-let http = reqwest::Client::new();
-let mut stream = Request::new(Provider::OpenAI, "sk-...")
-    .system_prompt("You are helpful.")
-    .user("Hello!")
-    .stream(&http)
-    .await?;
+use agentix::{Provider, ReasoningEffort, Request};
 
-while let Some(event) = stream.next().await {
-    match event {
-        LlmEvent::Token(t)         => print!("{t}"),
-        LlmEvent::Reasoning(r)     => print!("[think] {r}"),
-        LlmEvent::ToolCall(tc)     => println!("tool: {}({})", tc.name, tc.arguments),
-        LlmEvent::Usage(u)         => println!("tokens: {}", u.total_tokens),
-        LlmEvent::Error(e)         => eprintln!("error: {e}"),
-        LlmEvent::Done             => break,
-        _                          => {}
-    }
-}
-```
-
-### `complete()` — non-streaming completion
-
-```rust
-let resp = Request::new(Provider::OpenAI, "sk-...")
-    .user("What is 2+2?")
-    .complete(&http)
-    .await?;
-println!("{}", resp.content.unwrap_or_default());
-println!("reasoning: {:?}", resp.reasoning);
-println!("tool_calls: {:?}", resp.tool_calls);
-println!("usage: {:?}", resp.usage);
-```
-
-### Builder methods
-
-```rust
 let req = Request::new(Provider::DeepSeek, "sk-...")
     .model("deepseek-v4-pro")
     .base_url("https://custom.api/v1")
     .system_prompt("You are helpful.")
+    .reminder("<runtime_context>use current project settings</runtime_context>")
     .max_tokens(4096)
     .temperature(0.7)
     .reasoning_effort(ReasoningEffort::High)
-    .retries(5, 2000)           // max retries, initial delay ms
-    .user("Hello!")             // convenience for adding a user message
-    .message(msg)               // add any Message variant
-    .messages(vec![...])        // set full history
-    .tools(tool_defs);          // set tool definitions
+    .retries(5, 2_000)
+    .user("Hello")
+    .tools(vec![]);
+```
+
+Useful builder methods:
+
+- `model`, `base_url`, `system_prompt`, `reminder`
+- `user`, `message`, `messages`
+- `tools`
+- `max_tokens`, `temperature`, `reasoning_effort`
+- `text`, `json`, `json_schema`
+- `extra_body` for provider-specific top-level JSON fields
+- `retries(max, initial_delay_ms)`
+
+`complete()` returns `CompleteResponse`:
+
+```rust
+let response = req.complete(&http).await?;
+println!("text: {:?}", response.content);
+println!("reasoning: {:?}", response.reasoning);
+println!("tool calls: {:?}", response.tool_calls);
+println!("usage: {:?}", response.usage);
+println!("finish reason: {:?}", response.finish_reason);
 ```
 
 ---
 
-## Reasoning control (`ReasoningEffort`)
+## Streaming Events
 
-A single cross-provider dial for "how much should the model think". Providers that expose a thinking toggle and/or effort level map this to their own wire format; providers that don't, ignore it.
+`LlmEvent` is `#[non_exhaustive]`; include `_ => {}` in matches.
 
 ```rust
-use agentix::{Request, ReasoningEffort};
+while let Some(event) = stream.next().await {
+    match event {
+        LlmEvent::Token(t) => print!("{t}"),
+        LlmEvent::Reasoning(r) => eprint!("[reasoning] {r}"),
+        LlmEvent::ToolCallChunk(chunk) => {
+            eprintln!("tool args fragment: {}", chunk.delta);
+        }
+        LlmEvent::ToolCall(call) => {
+            eprintln!("tool: {}({})", call.name, call.arguments);
+        }
+        LlmEvent::AssistantState(_) => {}
+        LlmEvent::Usage(u) => eprintln!("tokens: {}", u.total_tokens),
+        LlmEvent::Done => break,
+        LlmEvent::Error(e) => eprintln!("error: {e}"),
+        _ => {}
+    }
+}
+```
+
+Provider-specific reasoning state is captured as `AssistantState` and attached
+to `Message::Assistant.provider_data` by the agent loop. User code usually does
+not need to inspect it.
+
+---
+
+## Reasoning Control
+
+`ReasoningEffort` is a single cross-provider knob:
+
+```rust
+use agentix::{ReasoningEffort, Request};
 
 let req = Request::deepseek(key)
-    .reasoning_effort(ReasoningEffort::Max)    // maximum effort
+    .reasoning_effort(ReasoningEffort::Max)
     .user("Prove that there are infinitely many primes.");
 ```
 
-| Variant   | DeepSeek                                   | Anthropic (Claude 4.6+)             | OpenAI (Responses API)         | Gemini 3+                    | Gemini 2.5        | OpenRouter                 | Others (Grok/Kimi/GLM) |
-|-----------|--------------------------------------------|-------------------------------------|--------------------------------|------------------------------|-------------------|----------------------------|------------------------|
-| `None`    | `thinking: disabled` (sampling valid)      | `thinking: disabled`                | omit `reasoning` (no toggle)   | `thinkingLevel: minimal`*    | `thinkingBudget: 0` | `reasoning.effort: none`  | ignored                |
-| `Minimal` | `thinking: enabled`, effort `high`         | `adaptive`, effort `low`            | `reasoning.effort: minimal`    | `thinkingLevel: minimal`     | `thinkingBudget: 512` | `reasoning.effort: minimal` | ignored                |
-| `Low`     | `thinking: enabled`, effort `high`         | `adaptive`, effort `low`            | `reasoning.effort: low`        | `thinkingLevel: low`         | `thinkingBudget: 1024` | `reasoning.effort: low`   | ignored                |
-| `Medium`  | `thinking: enabled`, effort `high`         | `adaptive`, effort `medium`         | `reasoning.effort: medium`     | `thinkingLevel: medium`      | `thinkingBudget: 4096` | `reasoning.effort: medium`| ignored                |
-| `High`    | `thinking: enabled`, effort `high`         | `adaptive`, effort `high`           | `reasoning.effort: high`       | `thinkingLevel: high`        | `thinkingBudget: 8192` | `reasoning.effort: high`  | ignored                |
-| `XHigh`   | `thinking: enabled`, effort `max`          | `adaptive`, effort `xhigh`          | `reasoning.effort: xhigh`      | `thinkingLevel: high`        | `thinkingBudget: 16384` | `reasoning.effort: xhigh`| ignored                |
-| `Max`     | `thinking: enabled`, effort `max`          | `adaptive`, effort `max`            | `reasoning.effort: high`†      | `thinkingLevel: high`        | `thinkingBudget: 24576` | `reasoning.effort: max`  | ignored                |
-| unset     | omit (default: thinking on)                | omit (default: thinking off)        | omit                           | omit                         | omit              | omit                       | no field               |
-
-\* Gemini 3 Pro can't fully disable thinking; `None` collapses to the floor (`minimal`).
-† OpenAI has no `max` variant; collapses to `high`. `xhigh` only works on `gpt-5.1-codex-max`.
+| Variant | DeepSeek | Anthropic-compatible | OpenAI Responses | Gemini 3+ | Gemini 2.5 | OpenRouter | Other chat providers |
+|---|---|---|---|---|---|---|---|
+| `None` | disable thinking | disable thinking | omit reasoning | minimal floor | budget 0 | `none` | ignored |
+| `Minimal` | high | low | minimal | minimal | 512 | minimal | ignored |
+| `Low` | high | low | low | low | 1024 | low | ignored |
+| `Medium` | high | medium | medium | medium | 4096 | medium | ignored |
+| `High` | high | high | high | high | 8192 | high | ignored |
+| `XHigh` | max | xhigh | xhigh | high | 16384 | xhigh | ignored |
+| `Max` | max | max | high | high | 24576 | max | ignored |
+| unset | provider default | provider default | omitted | omitted | omitted | omitted | omitted |
 
 Notes:
-- **`None` vs unset matter.** `None` emits an explicit disable toggle where the provider supports one and keeps sampling params valid. Leaving it unset accepts the provider's own default — which for DeepSeek is thinking on and for most others is thinking off.
-- **DeepSeek forbids sampling params in thinking mode**; setting `.temperature()` while thinking is on drops temperature before the wire with a `tracing::warn!`. Use `.reasoning_effort(ReasoningEffort::None)` to re-enable sampling.
-- **Round-trip for thinking + tool use** is automatic on **Anthropic** (thinking blocks + signatures), **OpenAI** (`encrypted_content` reasoning items), **Gemini** (`thoughtSignature` parts), and **OpenRouter** (typed `reasoning_details[]` entries). On each of these the full opaque state is captured into `Message::Assistant.provider_data` and re-emitted verbatim on the next turn, preserving the interleaved ordering that those APIs validate against (Anthropic's signature check, OpenAI's `'function_call' was provided without its required 'reasoning' item` rule, Gemini 3's 400 on missing `thoughtSignature`).
 
-See `examples/11_reasoning.rs` for a live comparison of the four states.
+- `ReasoningEffort::None` is different from leaving the field unset. `None`
+  explicitly disables thinking where the provider supports that toggle.
+- DeepSeek drops sampling parameters such as `temperature` while thinking is
+  enabled, because its API rejects that combination.
+- Thinking/tool-call state is automatically round-tripped for Anthropic-compatible
+  providers, OpenAI Responses, Gemini, and OpenRouter.
 
----
-
-## LlmEvent (what you receive from `stream()`)
-
-`LlmEvent` is `#[non_exhaustive]`; always include a wildcard `_ => {}` arm to stay forward-compatible.
-
-- `Token(String)` — incremental response text
-- `Reasoning(String)` — thinking/reasoning trace (DeepSeek `reasoning_content`, Claude thinking blocks, OpenAI reasoning summary, Gemini thought parts, OpenRouter `reasoning` / `reasoning.text` entries)
-- `ToolCallChunk(ToolCallChunk)` — partial tool call for real-time UI
-- `ToolCall(ToolCall)` — completed tool call
-- `AssistantState(serde_json::Value)` — opaque per-turn provider state. Emitted by Anthropic (thinking blocks + signatures), OpenAI (encrypted reasoning items), Gemini (`thoughtSignature` parts), and OpenRouter (typed `reasoning_details[]`). The agent loop attaches it to `Message::Assistant.provider_data` for round-trip; most user code can ignore it.
-- `Usage(UsageStats)` — token usage for the turn (includes `reasoning_tokens` where the provider reports it)
-- `Done` — stream ended
-- `Error(String)` — provider error
+See [examples/11_reasoning.rs](agentix/examples/11_reasoning.rs).
 
 ---
 
-## Defining Tools
+## Messages And Multimodal Input
 
-Two styles are supported: **standalone function** (simpler) and **impl block** (multiple tools in one struct).
-
-### Standalone function
+User messages are `Vec<Content>`:
 
 ```rust
-use agentix::tool;
+use agentix::{Content, DocumentContent, DocumentData, ImageContent, ImageData, Request};
+
+let req = Request::anthropic(key).message(agentix::Message::User(vec![
+    Content::text("Summarize this document and image."),
+    Content::Document(DocumentContent {
+        data: DocumentData::Base64(pdf_base64),
+        mime_type: "application/pdf".into(),
+        filename: Some("paper.pdf".into()),
+    }),
+    Content::Image(ImageContent {
+        data: ImageData::Url("https://example.com/chart.png".into()),
+        mime_type: "image/png".into(),
+    }),
+]));
+```
+
+Document support:
+
+- Anthropic-compatible providers emit `document` blocks.
+- OpenAI Responses emits `input_file`.
+- Gemini emits `inline_data` or `file_data`.
+- OpenRouter emits file parts for providers/plugins that support them.
+- DeepSeek, Grok, GLM, and Kimi silently drop document parts.
+
+Images are supported by providers whose wire format accepts them. If a provider
+does not accept a content type, agentix drops or degrades the part rather than
+inventing an incompatible schema.
+
+---
+
+## Tools
+
+Use `#[tool]` on standalone functions or an `impl agentix::Tool` block.
+Doc comments become tool and parameter descriptions.
+
+```rust
+use agentix::{ToolBundle, tool};
 
 /// Add two numbers.
 /// a: first number
 /// b: second number
-#[agentix::tool]
+#[tool]
 async fn add(a: i64, b: i64) -> i64 {
     a + b
 }
 
-/// Divide a by b.
-#[agentix::tool]
-async fn divide(a: f64, b: f64) -> Result<f64, String> {
-    if b == 0.0 { Err("division by zero".into()) } else { Ok(a / b) }
-}
-
-// Combine with + operator
-let tools = add + divide;
-let mut stream = agentix::agent(tools, http, request, history, Some(25_000));
-```
-
-The macro generates a unit struct with the same name as the function and implements `Tool` for it.
-
-### Impl block (multiple methods per struct)
-
-```rust
 struct Calculator;
 
 #[tool]
 impl agentix::Tool for Calculator {
-    /// Add two numbers.
-    /// a: first number
-    /// b: second number
-    async fn add(&self, a: i64, b: i64) -> i64 {
-        a + b
-    }
-
     /// Divide a by b.
+    /// a: numerator
+    /// b: denominator
     async fn divide(&self, a: f64, b: f64) -> Result<f64, String> {
-        if b == 0.0 { Err("division by zero".into()) } else { Ok(a / b) }
+        if b == 0.0 {
+            Err("division by zero".into())
+        } else {
+            Ok(a / b)
+        }
+    }
+}
+
+let tools = ToolBundle::default() + add + Calculator;
+```
+
+Run a full agent loop:
+
+```rust
+use agentix::{AgentEvent, Message, Request, ToolBundle};
+use futures::StreamExt;
+
+let http = reqwest::Client::new();
+let request = Request::deepseek(std::env::var("DEEPSEEK_API_KEY")?)
+    .system_prompt("Use tools for arithmetic.");
+let history = vec![Message::User(vec![agentix::Content::text("What is 12 / 3?")])];
+
+let mut stream = agentix::agent(ToolBundle::default() + Calculator, http, request, history, None);
+
+while let Some(event) = stream.next().await {
+    match event {
+        AgentEvent::Token(t) => print!("{t}"),
+        AgentEvent::ToolCallStart(call) => eprintln!("tool: {}", call.name),
+        AgentEvent::ToolProgress { progress, .. } => eprintln!("progress: {progress}"),
+        AgentEvent::ToolResult { name, content, .. } => eprintln!("{name}: {content:?}"),
+        AgentEvent::Done(usage) => eprintln!("tokens: {}", usage.total_tokens),
+        AgentEvent::Error(e) => eprintln!("error: {e}"),
+        _ => {}
     }
 }
 ```
 
-- Doc comment → tool description
-- `/// param: description` lines → argument descriptions
-- `Result::Err` automatically propagates as `{"error": "..."}` to the LLM
-
-### Streaming tools
-
-Add `#[streaming]` to yield `ToolOutput::Progress` / `ToolOutput::Result` incrementally:
+Streaming tools can yield progress before their final result:
 
 ```rust
-use agentix::{tool, ToolOutput};
+use agentix::{ToolOutput, tool};
 
-struct ProgressTool;
+struct Jobs;
 
 #[tool]
-impl agentix::Tool for ProgressTool {
-    /// Run a long job and stream progress.
+impl agentix::Tool for Jobs {
+    /// Run a job.
     /// steps: number of steps
     #[streaming]
-    fn long_job(&self, steps: u32) {
+    fn run_job(&self, steps: u32) {
         async_stream::stream! {
-            for i in 1..=steps {
-                yield ToolOutput::Progress(format!("{i}/{steps}"));
+            for step in 1..=steps {
+                yield ToolOutput::Progress(format!("{step}/{steps}"));
             }
-            yield ToolOutput::Result(serde_json::json!({ "done": true }));
+            yield ToolOutput::Result(vec![agentix::Content::text("done")]);
         }
     }
 }
 ```
 
-Normal and streaming methods can be freely mixed in the same `#[tool]` block.
+`ToolBundle` supports `new`, `with`, `push`, `remove`, `+`, `+=`, `-`, and `-=`.
 
 ---
 
-## MCP Tools
+## MCP
 
-Use external processes as tools via the Model Context Protocol:
+MCP client tools require the `mcp` feature:
 
 ```rust
-use agentix::McpTool;
+use agentix::{McpTool, ToolBundle};
 use std::time::Duration;
 
-let tool = McpTool::stdio("npx", &["-y", "@playwright/mcp"]).await?
-    .with_timeout(Duration::from_secs(60));
+let playwright = McpTool::stdio("npx", &["-y", "@playwright/mcp"])
+    .await?
+    .with_timeout(Duration::from_secs(60))
+    .with_output_limits(20_000, 20);
 
-// Add to a ToolBundle alongside regular tools
-let mut bundle = agentix::ToolBundle::new();
-bundle.push(tool);
+let tools = ToolBundle::default() + playwright;
 ```
 
-### Runtime add / remove
-
-```rust
-let mut bundle = agentix::ToolBundle::default();
-bundle += Calculator;          // AddAssign — add tool in-place
-bundle -= Calculator;          // SubAssign — remove all functions Calculator provides
-let bundle2 = bundle + Calculator - Calculator;  // Sub — returns new bundle
-```
+The `mcp-server` feature exposes local `ToolBundle`s as MCP services. See
+[examples/06_mcp_server.rs](agentix/examples/06_mcp_server.rs).
 
 ---
 
 ## Structured Output
 
-Constrain the model to emit JSON matching a Rust struct using `Request::json_schema()`.
-Derive `schemars::JsonSchema` on your struct and pass the generated schema:
+For JSON object mode:
+
+```rust
+let response = Request::openai(key)
+    .system_prompt("Return JSON only.")
+    .user("Return {\"ok\": true}.")
+    .json()
+    .complete(&http)
+    .await?;
+```
+
+For JSON Schema mode:
 
 ```rust
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Review {
@@ -432,137 +465,102 @@ struct Review {
 }
 
 let schema = serde_json::to_value(schemars::schema_for!(Review))?;
-
-let response = Request::openai(api_key)
+let response = Request::openai(key)
     .system_prompt("You are a film critic.")
-    .user("Review Inception (2010).")
-    .json_schema("review", schema, true)   // strict=true enforces the schema
+    .user("Review Inception.")
+    .json_schema("review", schema, true)
     .complete(&http)
     .await?;
 
 let review: Review = response.json()?;
 ```
 
-See `examples/08_structured_output.rs` for a runnable example.
+Provider behavior:
 
-**Provider support:**
-- **OpenAI** — full `json_schema` support (gpt-4o and later)
-- **Gemini** — `responseSchema` + `responseMimeType: application/json` (fully supported)
-- **DeepSeek** — `json_object` only; `json_schema` is automatically degraded with a `tracing::warn`
-- **Anthropic** — `response_format` is ignored; use prompt engineering instead
+- OpenAI Responses supports text, JSON object, and JSON Schema.
+- Gemini supports JSON object and JSON Schema through generation config.
+- DeepSeek degrades JSON Schema to JSON object with a warning.
+- Grok, GLM, Kimi, and OpenRouter pass compatible `response_format` fields.
+- Anthropic-compatible providers ignore `response_format`; use prompting or
+  tools for strict structure.
 
----
-
-## Reliability
-
-- **Automatic retries** — exponential backoff for 429 / 5xx responses
-- **Usage tracking** — per-request token accounting across all providers; `AgentEvent::Done` contains cumulative totals across all turns
+See [examples/08_structured_output.rs](agentix/examples/08_structured_output.rs).
 
 ---
 
-## Agent (agentic loop)
+## Claude Code
 
-`agentix::agent()` drives the full LLM ↔ tool-call loop and yields typed `AgentEvent`s.
-Pass it a `ToolBundle`, a base `Request`, and an initial history — it handles
-repeated LLM calls, tool execution, and history accumulation automatically.
-
-```rust
-use agentix::{AgentEvent, Request, Provider, ToolBundle};
-use futures::StreamExt;
-
-#[tokio::main]
-async fn main() {
-    let http = reqwest::Client::new();
-    let request = Request::new(Provider::DeepSeek, std::env::var("DEEPSEEK_API_KEY").unwrap())
-        .system_prompt("You are helpful.");
-
-    let mut stream = agentix::agent(ToolBundle::default(), http, request, vec![], None);
-    while let Some(event) = stream.next().await {
-        match event {
-            AgentEvent::Token(t)                          => print!("{t}"),
-            AgentEvent::ToolCallStart(tc)                 => println!("→ {}({})", tc.name, tc.arguments),
-            AgentEvent::ToolResult { name, content, .. }  => println!("← [{name}] {content}"),
-            AgentEvent::Usage(u)                          => println!("tokens: {}", u.total_tokens),
-            AgentEvent::Error(e)                          => eprintln!("error: {e}"),
-            _ => {}
-        }
-    }
-}
-```
-
-### AgentEvent variants
-
-- `Token(String)` — incremental response text
-- `Reasoning(String)` — thinking trace
-- `ToolCallChunk(ToolCallChunk)` — streaming partial tool call
-- `ToolCallStart(ToolCall)` — complete tool call, about to execute
-- `ToolProgress { id, name, progress }` — intermediate tool output
-- `ToolResult { id, name, content }` — final tool result
-- `Usage(UsageStats)` — token usage per LLM request
-- `Done(UsageStats)` — emitted once when the loop finishes normally; contains **cumulative** totals across all turns
-- `Warning(String)` — recoverable stream error
-- `Error(String)` — fatal error
-
-`agentix::agent()` returns a `BoxStream<'static, AgentEvent>` — drop it to abort.
-
----
-
-## Claude Code (Max OAuth)
-
-`Provider::ClaudeCode` is a regular provider backed by `claude -p`, so you can
-ride an existing **Claude Max** subscription instead of paying per-token via
-`ANTHROPIC_API_KEY`. It plugs into `agent()` like any other provider — agentix
-owns the loop, tool calls dispatch locally through the `Tool` trait, and the
-loopback MCP server only surfaces tool schemas. Auth comes from the CLI's
-OAuth session in the OS keychain.
-
-Requires the `claude-code` feature and the [`claude` CLI] installed + logged in.
+With the `claude-code` feature, `Provider::ClaudeCode` runs the local
+`claude -p` CLI and lets agentix keep control of the LLM/tool loop. Auth comes
+from the Claude CLI OAuth session.
 
 ```toml
-agentix = { version = "0.18.2", features = ["claude-code"] }
+agentix = { version = "0.22.0", features = ["claude-code"] }
 ```
 
 ```rust
-use agentix::{AgentEvent, Message, Request, UserContent, agent, tool};
+use agentix::{AgentEvent, Content, Message, Request, agent, tool};
 use futures::StreamExt;
 
 struct Calculator;
+
 #[tool]
 impl agentix::Tool for Calculator {
-    /// Add two numbers.  a: first  b: second
-    async fn add(&self, a: f64, b: f64) -> f64 { a + b }
+    /// Add two numbers.
+    /// a: first number
+    /// b: second number
+    async fn add(&self, a: f64, b: f64) -> f64 {
+        a + b
+    }
 }
 
-#[tokio::main]
-async fn main() {
-    let http = reqwest::Client::new();
-    let base = Request::claude_code()
-        .model("sonnet")
-        .system_prompt("You are a concise math assistant. Always use tools for arithmetic.");
-    let history = vec![Message::User(vec![UserContent::Text {
-        text: "What is 123 + 456?".into(),
-    }])];
+let http = reqwest::Client::new();
+let request = Request::claude_code()
+    .model("sonnet")
+    .system_prompt("Always use tools for arithmetic.");
+let history = vec![Message::User(vec![Content::text("What is 123 + 456?")])];
 
-    let mut stream = agent(Calculator, http, base, history, None);
-
-    while let Some(event) = stream.next().await {
-        match event {
-            AgentEvent::Token(t) => print!("{t}"),
-            AgentEvent::ToolCallStart(tc) => println!("\n→ {}({})", tc.name, tc.arguments),
-            AgentEvent::Done(u) => println!("\n[tokens: {}]", u.total_tokens),
-            _ => {}
-        }
+let mut stream = agent(Calculator, http, request, history, None);
+while let Some(event) = stream.next().await {
+    match event {
+        AgentEvent::Token(t) => print!("{t}"),
+        AgentEvent::Done(usage) => eprintln!("tokens: {}", usage.total_tokens),
+        _ => {}
     }
 }
 ```
 
-Each turn spawns a fresh `claude -p`, replays prior history via `--resume`,
-and kills the subprocess once the first assistant turn lands — so the agent
-loop keeps full control over tool dispatch and multi-turn state.
+See [examples/10_claude_code.rs](agentix/examples/10_claude_code.rs).
 
-See `examples/10_claude_code.rs` for a runnable example.
+---
 
-[`claude` CLI]: https://docs.claude.com/en/docs/claude-code/overview
+## Sensitive Logging
+
+Full request bodies, response bodies, streaming chunks, and MCP raw request
+bodies are sensitive and disabled by default. To enable them, opt in at compile
+time and runtime:
+
+```bash
+AGENTIX_LOG_BODIES=1 cargo run --features sensitive-logs
+```
+
+If either gate is missing, full bodies are not logged.
+
+---
+
+## Examples
+
+- [01_streaming.rs](agentix/examples/01_streaming.rs): streaming tokens
+- [02_completion.rs](agentix/examples/02_completion.rs): non-streaming completion
+- [03_conversation.rs](agentix/examples/03_conversation.rs): conversation state
+- [04_tools.rs](agentix/examples/04_tools.rs): tool definitions
+- [05_mcp_client.rs](agentix/examples/05_mcp_client.rs): MCP client tools
+- [06_mcp_server.rs](agentix/examples/06_mcp_server.rs): MCP server
+- [07_agent.rs](agentix/examples/07_agent.rs): agent loop
+- [08_structured_output.rs](agentix/examples/08_structured_output.rs): JSON schema output
+- [09_deep_research.rs](agentix/examples/09_deep_research.rs): multi-step research flow
+- [10_claude_code.rs](agentix/examples/10_claude_code.rs): Claude Code provider
+- [11_reasoning.rs](agentix/examples/11_reasoning.rs): reasoning effort comparison
 
 ---
 

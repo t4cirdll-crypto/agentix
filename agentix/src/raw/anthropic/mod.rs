@@ -24,14 +24,13 @@ pub(crate) async fn stream_anthropic(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
-    let req = request::build_anthropic_request(config, messages, tools, true);
-    let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
-    let resp = post_streaming(
-        http,
-        &url,
-        &req,
+    stream_anthropic_with_post_config(
         token,
-        &PostConfig {
+        http,
+        config,
+        messages,
+        tools,
+        PostConfig {
             use_query_key: false,
             auth_header: Some("x-api-key"),
             extra_headers: &[("anthropic-version", "2023-06-01")],
@@ -39,7 +38,44 @@ pub(crate) async fn stream_anthropic(
             retry_delay_ms: config.retry_delay_ms,
         },
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn stream_mimo(
+    token: &str,
+    http: &reqwest::Client,
+    config: &AgentConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
+    stream_anthropic_with_post_config(
+        token,
+        http,
+        config,
+        messages,
+        tools,
+        PostConfig {
+            use_query_key: false,
+            auth_header: Some("api-key"),
+            extra_headers: &[],
+            max_retries: config.max_retries,
+            retry_delay_ms: config.retry_delay_ms,
+        },
+    )
+    .await
+}
+
+async fn stream_anthropic_with_post_config(
+    token: &str,
+    http: &reqwest::Client,
+    config: &AgentConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    post_config: PostConfig,
+) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
+    let req = request::build_anthropic_request(config, messages, tools, true);
+    let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+    let resp = post_streaming(http, &url, &req, token, &post_config).await?;
 
     Ok(async_stream::stream! {
         let mut bufs = StreamBufs::new();
@@ -94,14 +130,13 @@ pub(crate) async fn complete_anthropic(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Result<CompleteResponse, ApiError> {
-    let req = request::build_anthropic_request(config, messages, tools, false);
-    let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
-    let body = post_json(
-        http,
-        &url,
-        &req,
+    complete_anthropic_with_post_config(
         token,
-        &PostConfig {
+        http,
+        config,
+        messages,
+        tools,
+        PostConfig {
             use_query_key: false,
             auth_header: Some("x-api-key"),
             extra_headers: &[("anthropic-version", "2023-06-01")],
@@ -109,7 +144,44 @@ pub(crate) async fn complete_anthropic(
             retry_delay_ms: config.retry_delay_ms,
         },
     )
-    .await?;
+    .await
+}
+
+pub(crate) async fn complete_mimo(
+    token: &str,
+    http: &reqwest::Client,
+    config: &AgentConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+) -> Result<CompleteResponse, ApiError> {
+    complete_anthropic_with_post_config(
+        token,
+        http,
+        config,
+        messages,
+        tools,
+        PostConfig {
+            use_query_key: false,
+            auth_header: Some("api-key"),
+            extra_headers: &[],
+            max_retries: config.max_retries,
+            retry_delay_ms: config.retry_delay_ms,
+        },
+    )
+    .await
+}
+
+async fn complete_anthropic_with_post_config(
+    token: &str,
+    http: &reqwest::Client,
+    config: &AgentConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    post_config: PostConfig,
+) -> Result<CompleteResponse, ApiError> {
+    let req = request::build_anthropic_request(config, messages, tools, false);
+    let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+    let body = post_json(http, &url, &req, token, &post_config).await?;
 
     // Parse twice: once structurally for content/tool_calls/reasoning, once
     // as a raw Value to preserve the full content array for round-tripping

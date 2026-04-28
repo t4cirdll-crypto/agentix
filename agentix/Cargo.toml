@@ -2,7 +2,7 @@
 name = "agentix"
 version = "0.22.0"
 edition = "2024"
-description = "Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, MCP, DeepSeek, OpenAI, Anthropic, Gemini"
+description = "Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, MCP, DeepSeek, OpenAI, Anthropic, Gemini, Mimo"
 authors = ["ozongzi <ozongzi@icloud.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ozongzi/agentix"

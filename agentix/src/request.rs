@@ -300,6 +300,9 @@ pub enum Provider {
     /// MiniMax
     #[serde(rename = "minimax")]
     Minimax,
+    /// Xiaomi MiMo (Anthropic-compatible Messages API)
+    #[serde(rename = "mimo")]
+    Mimo,
     /// xAI Grok
     #[serde(rename = "grok")]
     Grok,
@@ -324,6 +327,7 @@ impl Provider {
             Provider::Kimi => "https://api.moonshot.cn/v1",
             Provider::Glm => "https://open.bigmodel.cn/api/paas/v4",
             Provider::Minimax => "https://api.minimaxi.com/anthropic",
+            Provider::Mimo => "https://api.xiaomimimo.com/anthropic",
             Provider::Grok => "https://api.x.ai/v1",
             Provider::OpenRouter => "https://openrouter.ai/api/v1",
             #[cfg(feature = "claude-code")]
@@ -341,6 +345,7 @@ impl Provider {
             Provider::Kimi => "kimi-k2.5",
             Provider::Glm => "glm-5",
             Provider::Minimax => "MiniMax-M2.7",
+            Provider::Mimo => "mimo-v2.5-pro",
             Provider::Grok => "grok-4",
             Provider::OpenRouter => "openrouter/auto",
             #[cfg(feature = "claude-code")]
@@ -504,6 +509,11 @@ impl Request {
     /// Shortcut for `Request::new(Provider::Minimax, api_key)`.
     pub fn minimax(api_key: impl Into<String>) -> Self {
         Self::new(Provider::Minimax, api_key)
+    }
+
+    /// Shortcut for `Request::new(Provider::Mimo, api_key)`.
+    pub fn mimo(api_key: impl Into<String>) -> Self {
+        Self::new(Provider::Mimo, api_key)
     }
 
     /// Shortcut for `Request::new(Provider::Grok, api_key)`.
@@ -697,6 +707,10 @@ impl Request {
                 )
                 .await
             }
+            Provider::Mimo => {
+                crate::raw::anthropic::stream_mimo(&self.api_key, http, &config, messages, tools)
+                    .await
+            }
             Provider::Kimi => {
                 crate::raw::kimi::stream_kimi(&self.api_key, http, &config, messages, tools).await
             }
@@ -774,6 +788,10 @@ impl Request {
                     tools,
                 )
                 .await
+            }
+            Provider::Mimo => {
+                crate::raw::anthropic::complete_mimo(&self.api_key, http, &config, messages, tools)
+                    .await
             }
             Provider::Kimi => {
                 crate::raw::kimi::complete_kimi(&self.api_key, http, &config, messages, tools).await

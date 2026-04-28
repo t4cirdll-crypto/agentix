@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Added `Provider::Mimo` / `Request::mimo()` for Xiaomi MiMo's Anthropic-compatible Messages API. Defaults to `https://api.xiaomimimo.com/anthropic`, model `mimo-v2.5-pro`, and sends `api-key` authentication.
+
 ---
 
 ## [0.22.0] - 2026-04-25

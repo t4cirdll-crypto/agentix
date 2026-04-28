@@ -2,7 +2,7 @@
 //! Each test mirrors a README snippet to ensure the documented API is real.
 
 use agentix::request::ToolCall;
-use agentix::{LlmEvent, Message, Provider, Request, UserContent};
+use agentix::{LlmEvent, Message, Provider, ReasoningEffort, Request, UserContent};
 
 // ── Quick Start (simplified, no network) ──────────────────────────────────────
 
@@ -20,28 +20,41 @@ fn quickstart_compiles() {
 
 #[test]
 fn provider_constructors() {
-    // DeepSeek
     let req = Request::new(Provider::DeepSeek, "sk-...");
     assert_eq!(req.model, "deepseek-chat");
 
-    // OpenAI
     let req = Request::new(Provider::OpenAI, "sk-...");
     assert_eq!(req.model, "gpt-4o");
 
-    // Anthropic
     let req = Request::new(Provider::Anthropic, "sk-ant-...");
     assert_eq!(req.model, "claude-sonnet-4-20250514");
 
-    // Gemini
     let req = Request::new(Provider::Gemini, "AIza...");
     assert_eq!(req.model, "gemini-2.0-flash");
 
-    // OpenRouter override
-    let req = Request::new(Provider::OpenAI, "sk-or-...")
-        .base_url("https://openrouter.ai/api/v1")
-        .model("openrouter/free");
-    assert_eq!(req.base_url, "https://openrouter.ai/api/v1");
-    assert_eq!(req.model, "openrouter/free");
+    let req = Request::new(Provider::Kimi, "sk-...");
+    assert_eq!(req.model, "kimi-k2.5");
+
+    let req = Request::new(Provider::Glm, "sk-...");
+    assert_eq!(req.model, "glm-5");
+
+    let req = Request::new(Provider::Minimax, "sk-...");
+    assert_eq!(req.model, "MiniMax-M2.7");
+
+    let req = Request::new(Provider::Mimo, "sk-...");
+    assert_eq!(req.model, "mimo-v2.5-pro");
+
+    let req = Request::new(Provider::Grok, "sk-...");
+    assert_eq!(req.model, "grok-4");
+
+    let req = Request::new(Provider::OpenRouter, "sk-or-...");
+    assert_eq!(req.model, "openrouter/auto");
+
+    let req = Request::openrouter("local-key")
+        .base_url("http://localhost:11434/v1")
+        .model("llama3.1");
+    assert_eq!(req.base_url, "http://localhost:11434/v1");
+    assert_eq!(req.model, "llama3.1");
 }
 
 // ── Builder methods section ───────────────────────────────────────────────────
@@ -61,6 +74,7 @@ fn builder_methods() {
         .system_prompt("You are helpful.")
         .max_tokens(4096)
         .temperature(0.7)
+        .reasoning_effort(ReasoningEffort::High)
         .retries(5, 2000)
         .user("Hello!")
         .message(msg)
@@ -74,6 +88,7 @@ fn builder_methods() {
     assert_eq!(req.system_message.as_deref(), Some("You are helpful."));
     assert_eq!(req.max_tokens, Some(4096));
     assert_eq!(req.temperature, Some(0.7));
+    assert_eq!(req.reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(req.max_retries, 5);
     assert_eq!(req.retry_delay_ms, 2000);
 }
@@ -110,4 +125,5 @@ fn complete_response_fields() {
     let _ = resp.reasoning;
     let _ = resp.tool_calls;
     let _ = resp.usage;
+    let _ = resp.finish_reason;
 }

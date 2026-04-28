@@ -11,6 +11,7 @@ use agentix::{Provider, Request};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
+use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 use futures::StreamExt;
 use tokio::net::TcpListener;
@@ -111,6 +112,68 @@ async fn start_capture_mock(response: String) -> (String, Arc<Mutex<Option<serde
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{addr}"), body)
+}
+
+#[derive(Clone)]
+struct CaptureRequest {
+    path: String,
+    headers: Vec<(String, String)>,
+    body: serde_json::Value,
+}
+
+#[derive(Clone)]
+struct CaptureRequestState {
+    request: Arc<Mutex<Option<CaptureRequest>>>,
+    response: String,
+}
+
+async fn handle_request_capture(
+    State(state): State<CaptureRequestState>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
+    let headers = headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or("<non-utf8>").to_string(),
+            )
+        })
+        .collect();
+    *state.request.lock().unwrap() = Some(CaptureRequest {
+        path: uri.path().to_string(),
+        headers,
+        body: parsed,
+    });
+    Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(Body::from(state.response))
+        .unwrap()
+}
+
+async fn start_request_capture_mock(
+    response: String,
+) -> (String, Arc<Mutex<Option<CaptureRequest>>>) {
+    let request = Arc::new(Mutex::new(None));
+    let state = CaptureRequestState {
+        request: request.clone(),
+        response,
+    };
+    let app = Router::new()
+        .fallback(handle_request_capture)
+        .with_state(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), request)
 }
 
 fn fixture(path: &str) -> String {
@@ -483,6 +546,49 @@ mod anthropic {
             "<runtime_context>volatile plan</runtime_context>"
         );
         assert!(content[1]["cache_control"].is_null());
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  MIMO (Anthropic-compatible Messages API)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+mod mimo {
+    use super::*;
+
+    fn req(base_url: &str) -> Request {
+        Request::new(Provider::Mimo, "test-key")
+            .base_url(base_url)
+            .model("mimo-v2.5-pro")
+            .user("hi")
+    }
+
+    #[tokio::test]
+    async fn complete_text_uses_anthropic_wire_format_with_mimo_auth() {
+        let (url, captured) =
+            start_request_capture_mock(fixture("anthropic/complete_text.json")).await;
+        let resp = req(&url).complete(&http()).await.unwrap();
+
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("The capital of France is Paris.")
+        );
+
+        let captured = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("mock server should capture request");
+        assert_eq!(captured.path, "/v1/messages");
+        assert_eq!(captured.body["model"], "mimo-v2.5-pro");
+        assert_eq!(captured.body["messages"][0]["role"], "user");
+        assert!(
+            captured
+                .headers
+                .iter()
+                .any(|(name, value)| name == "api-key" && value == "test-key")
+        );
+        assert!(!captured.headers.iter().any(|(name, _)| name == "x-api-key"));
     }
 }
 

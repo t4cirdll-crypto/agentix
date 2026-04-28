@@ -1,7 +1,8 @@
 /*!
 agentix — Multi-provider LLM client for Rust.
 
-Supports DeepSeek, OpenAI, Anthropic, and Gemini out of the box.
+Supports DeepSeek, OpenAI, Anthropic, Gemini, Kimi, GLM, MiniMax, Mimo,
+Grok, and OpenRouter out of the box.
 The core API is a value-type [`Request`] that carries everything needed to
 hit an LLM API — provider, credentials, model, messages, tools, and tuning.
 Call [`Request::stream`] or [`Request::complete`] with a shared `reqwest::Client`.
