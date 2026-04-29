@@ -444,6 +444,9 @@ pub(crate) async fn stream_claude_code(
         let mut child = child;
         let mut state = StreamState::default();
         let mut got_terminal = false;
+        // Stashed usage from the most recent `assistant` event; emitted when
+        // we see the real-payload event (or at stream end if none arrives).
+        let mut pending_usage: Option<UsageStats> = None;
 
         'outer: loop {
             let line = match lines.next_line().await {
@@ -486,13 +489,23 @@ pub(crate) async fn stream_claude_code(
                         }))
                         .unwrap_or(false);
 
+                    // Each `assistant` event carries the same `usage` payload
+                    // (input/cache/cumulative output) for this turn. Emitting on
+                    // every event makes downstream accumulators (e.g. `agent.rs`
+                    // total_usage) double-count the input. Emit once: prefer the
+                    // real-payload event; fall back to the thinking-only event's
+                    // usage if no payload event arrives.
                     if let Some(u) = msg.get("usage") {
-                        yield LlmEvent::Usage(parse_usage(u));
+                        pending_usage = Some(parse_usage(u));
                     }
 
                     if !has_payload {
                         // Thinking-only assistant; wait for the next one.
                         continue;
+                    }
+
+                    if let Some(u) = pending_usage.take() {
+                        yield LlmEvent::Usage(u);
                     }
 
                     if let Some(blocks) = content {
@@ -538,6 +551,12 @@ pub(crate) async fn stream_claude_code(
                 }
                 _ => {}
             }
+        }
+
+        // Flush stashed usage if the stream ended without a real-payload
+        // assistant event (e.g. thinking-only refusal).
+        if let Some(u) = pending_usage.take() {
+            yield LlmEvent::Usage(u);
         }
 
         if !got_terminal {
