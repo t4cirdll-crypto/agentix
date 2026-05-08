@@ -1,6 +1,6 @@
 [package]
 name = "agentix"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2024"
 description = "Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, MCP, DeepSeek, OpenAI, Anthropic, Gemini, Mimo"
 authors = ["ozongzi <ozongzi@icloud.com>"]
@@ -30,6 +30,8 @@ claude-code = [
     "mcp-server",
     "dep:uuid",
 ]
+server-anthropic = ["dep:axum"]
+cli = ["server-anthropic", "claude-code", "dep:tracing-subscriber"]
 
 [dependencies]
 async-stream = "0.3"
@@ -51,8 +53,8 @@ tracing = "0.1"
 # Optional: MCP (Model Context Protocol) client / server support
 rmcp = { version = "1.1", optional = true }
 
-# Optional: HTTP server for mcp-server feature
-axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
+# Optional: HTTP server for mcp-server / server-anthropic features
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio", "json"] }
 
 # Optional: base64 encoding for fetched-URL images on mcp-server output
 base64 = { version = "0.22", optional = true }
@@ -61,9 +63,21 @@ tokio-util = { version = "0.7.18", features = ["net"] }
 # Optional: UUID generation for Claude Code session files
 uuid = { version = "1", optional = true, features = ["v4"] }
 
+# Optional: tracing subscriber for the CLI binary
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
+
 [[example]]
 name = "10_claude_code"
 required-features = ["claude-code"]
+
+[[example]]
+name = "12_server_anthropic"
+required-features = ["server-anthropic"]
+
+[[bin]]
+name = "agentix"
+path = "src/bin/agentix.rs"
+required-features = ["cli"]
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["http1", "tokio"] }

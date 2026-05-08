@@ -2,6 +2,41 @@
 
 ---
 
+## [0.24.0] - 2026-05-09
+
+### Summary
+
+agentix flips from a pure client library into a **client + protocol-translation hub**. New `server-anthropic` feature exposes any agentix upstream chain as an Anthropic Messages-compatible HTTP endpoint, so tools that hardcode Anthropic's wire shape (Claude Code, claude-code-router, etc.) can talk to *any* agentix-supported backend. Bundled `agentix` CLI binary makes it a one-liner. Headline use case: route Claude Code at the local `claude` OAuth subscription with a paid-API fallback; verified end-to-end against the official Anthropic Python SDK.
+
+### New features
+
+- **`server-anthropic` feature** — Anthropic Messages-compatible HTTP server. `POST /v1/messages` (streaming SSE + non-streaming JSON), `POST /v1/messages/count_tokens`, and `GET /v1/models` are exposed. Inbound requests translate to agentix's internal `Request` + `Vec<Message>` representation; outbound, the existing 10 providers serve as backends.
+- **Fallback chain** — `AnthropicServer::new(Vec<UpstreamSpec>)` accepts an ordered list of upstreams. Errors before a stream commits to its first event fall through to the next upstream; errors after commit propagate to the client. Default per-upstream pre-commit timeout: 30 s. Implementation uses peek-then-commit: the first event is awaited before any bytes are written to the client, so swapping upstreams stays transparent.
+- **`agentix` CLI** — new binary behind the `cli` feature flag. Hand-rolled argv walker; repeated `-i <upstream>` declarations form the fallback chain, and trailing `--token / --model / --base-url` flags bind to the most recent `-i`. URLs are auto-recognized and routed via `Provider::OpenRouter` with the trailing `/chat/completions` stripped.
+  ```
+  agentix -i claude-code \
+          -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
+          --listen 127.0.0.1:7878
+  ```
+- **`LlmEvent::ReasoningSignature(String)`** — new variant emitted inline by `Provider::Anthropic` when the upstream sends a `signature_delta`. Enables end-to-end signature passthrough through the proxy (so `client → agentix → Anthropic → agentix → client` round-trips preserve thinking-block signatures, which Anthropic enforces on the next turn when both `thinking` and `tool_use` are present). Other providers don't emit this variant.
+
+### Internal changes
+
+- `raw/anthropic/{request,response}.rs` types now derive both `Serialize` and `Deserialize` (previously request types were Serialize-only and response types were Deserialize-only). `SystemBlock.kind` and `RequestMessage.role` change from `&'static str` to `String` for symmetric trait support — wire output is identical, but this is a public type-signature change for any downstream code that constructs these structs directly.
+- The server's inbound translator preserves the FULL assistant block array (including signatures) into `provider_data["anthropic_content"]` whenever any thinking block is present, bypassing the existing `complete_anthropic` gate (which only saved provider_data on `thinking + tool_use` turns). Pure-thinking turns now round-trip cleanly through the proxy.
+
+### Tests
+
+- 23 new tests: 6 CLI-parser unit tests, 7 inbound-translation unit tests, 5 SSE state-machine unit tests, 5 server integration tests.
+- E2E verified against the official `anthropic` Python SDK against a `claude-code` upstream — non-streaming and streaming both produce SDK-parseable wire output (no pydantic validation errors, signatures and usage round-trip correctly).
+
+### Public API
+
+- Additive: `agentix::server::{AnthropicServer, UpstreamSpec, ServerError}` (gated by `server-anthropic`); `LlmEvent::ReasoningSignature` variant (`#[non_exhaustive]` keeps it non-breaking for external matches with `_` arms).
+- Breaking only for direct constructors of `raw::anthropic::request::{SystemBlock, RequestMessage}` — those fields move from `&'static str` to `String`. Internal users via the `Request` builder are unaffected.
+
+---
+
 ## [0.23.0] - 2026-05-08
 
 ### Summary

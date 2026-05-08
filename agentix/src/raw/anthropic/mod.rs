@@ -308,10 +308,10 @@ fn parse_stream_event(
                     {
                         match sig {
                             Some(existing) => existing.push_str(&signature),
-                            None => *sig = Some(signature),
+                            None => *sig = Some(signature.clone()),
                         }
                     }
-                    vec![]
+                    vec![LlmEvent::ReasoningSignature(signature)]
                 }
                 ContentBlockDelta::InputJsonDelta { partial_json } if !partial_json.is_empty() => {
                     if let Some(Some(BlockBuild::ToolUse { input_json, .. })) = blocks.get_mut(idx)

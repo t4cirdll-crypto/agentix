@@ -23,51 +23,51 @@ impl CacheControl {
 
 // ── System prompt (block format required for cache_control) ───────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemBlock {
     #[serde(rename = "type")]
-    pub kind: &'static str,
+    pub kind: String,
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cache_control: Option<CacheControl>,
 }
 
 // ── Request ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Request {
     pub model: String,
     pub max_tokens: u32,
     pub messages: Vec<RequestMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub system: Option<Vec<SystemBlock>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tools: Option<Vec<Tool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_choice: Option<ToolChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub thinking: Option<ThinkingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_config: Option<OutputConfig>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingConfig {
     Adaptive,
     Disabled,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OutputConfig {
     pub effort: AnthropicEffort,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum AnthropicEffort {
     Low,
@@ -78,13 +78,13 @@ pub enum AnthropicEffort {
     Max,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestMessage {
-    pub role: &'static str,
+    pub role: String,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
@@ -162,15 +162,15 @@ pub enum DocumentSource {
     Url { url: String },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Tool {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub description: Option<String>,
     pub input_schema: Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolChoice {
     Auto,
@@ -209,12 +209,12 @@ pub(crate) fn build_anthropic_request(
             Message::User(parts) => {
                 if !pending_tool_results.is_empty() {
                     out_messages.push(RequestMessage {
-                        role: "user",
+                        role: "user".into(),
                         content: MessageContent::Blocks(std::mem::take(&mut pending_tool_results)),
                     });
                 }
                 out_messages.push(RequestMessage {
-                    role: "user",
+                    role: "user".into(),
                     content: user_content_from_parts(parts.clone()),
                 });
             }
@@ -226,7 +226,7 @@ pub(crate) fn build_anthropic_request(
             } => {
                 if !pending_tool_results.is_empty() {
                     out_messages.push(RequestMessage {
-                        role: "user",
+                        role: "user".into(),
                         content: MessageContent::Blocks(std::mem::take(&mut pending_tool_results)),
                     });
                 }
@@ -245,12 +245,12 @@ pub(crate) fn build_anthropic_request(
                         .filter_map(|b| serde_json::from_value(b.clone()).ok())
                         .collect();
                     out_messages.push(RequestMessage {
-                        role: "assistant",
+                        role: "assistant".into(),
                         content: MessageContent::Blocks(parsed),
                     });
                 } else if tool_calls.is_empty() {
                     out_messages.push(RequestMessage {
-                        role: "assistant",
+                        role: "assistant".into(),
                         content: MessageContent::Text(content.clone().unwrap_or_default()),
                     });
                 } else {
@@ -273,7 +273,7 @@ pub(crate) fn build_anthropic_request(
                         });
                     }
                     out_messages.push(RequestMessage {
-                        role: "assistant",
+                        role: "assistant".into(),
                         content: MessageContent::Blocks(blocks),
                     });
                 }
@@ -318,7 +318,7 @@ pub(crate) fn build_anthropic_request(
     }
     if !pending_tool_results.is_empty() {
         out_messages.push(RequestMessage {
-            role: "user",
+            role: "user".into(),
             content: MessageContent::Blocks(pending_tool_results),
         });
     }
@@ -354,7 +354,7 @@ pub(crate) fn build_anthropic_request(
         .filter(|s| !s.is_empty())
         .map(|s| {
             vec![SystemBlock {
-                kind: "text",
+                kind: "text".to_string(),
                 text: s.to_string(),
                 cache_control: Some(CacheControl::ephemeral()),
             }]
@@ -502,7 +502,7 @@ fn append_reminder(messages: &mut Vec<RequestMessage>, reminder: Option<&str>) {
         }
     } else {
         messages.push(RequestMessage {
-            role: "user",
+            role: "user".into(),
             content: MessageContent::Blocks(vec![block]),
         });
     }

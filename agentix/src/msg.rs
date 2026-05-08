@@ -14,6 +14,10 @@ pub enum LlmEvent {
     Token(String),
     /// A reasoning/thinking fragment.
     Reasoning(String),
+    /// Signature attached to the most recently opened reasoning block. Currently
+    /// only Anthropic-compatible providers emit this; consumers that don't care
+    /// about signature passthrough can ignore the variant.
+    ReasoningSignature(String),
     /// A tool call fragment emitted during streaming.
     ToolCallChunk(crate::types::ToolCallChunk),
     /// A tool call requested by the model.

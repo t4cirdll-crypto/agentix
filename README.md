@@ -60,23 +60,49 @@ println!("{}", response.content.unwrap_or_default());
 
 ```toml
 [dependencies]
-agentix = "0.22.0"
+agentix = "0.24"
 ```
 
 Optional features:
 
 ```toml
 # MCP client tools
-agentix = { version = "0.22.0", features = ["mcp"] }
+agentix = { version = "0.24", features = ["mcp"] }
 
 # Expose local tools as an MCP server
-agentix = { version = "0.22.0", features = ["mcp-server"] }
+agentix = { version = "0.24", features = ["mcp-server"] }
 
 # Use the local `claude -p` CLI as Provider::ClaudeCode
-agentix = { version = "0.22.0", features = ["claude-code"] }
+agentix = { version = "0.24", features = ["claude-code"] }
+
+# Anthropic Messages-compatible HTTP server (POST /v1/messages, streaming SSE
+# + non-streaming, fallback chain across upstreams). Library API is
+# `agentix::server::AnthropicServer`.
+agentix = { version = "0.24", features = ["server-anthropic"] }
+
+# `agentix` CLI binary — Anthropic Messages proxy with fallback. Wraps
+# server-anthropic with arg parsing for the headline use case.
+agentix = { version = "0.24", features = ["cli"] }
 
 # Compile-time gate for full request/response body logging
-agentix = { version = "0.22.0", features = ["sensitive-logs"] }
+agentix = { version = "0.24", features = ["sensitive-logs"] }
+```
+
+The CLI binary takes one or more `-i <upstream>` flags (each opens a new
+upstream in the fallback chain; trailing `--token / --model / --base-url`
+flags bind to the most recent `-i`):
+
+```bash
+# Use Claude Code OAuth as primary, DeepSeek paid API as fallback.
+agentix -i claude-code \
+        -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
+        --listen 127.0.0.1:7878
+```
+
+Then point any tool that speaks Anthropic Messages format at the proxy:
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:7878 ANTHROPIC_API_KEY=any claude
 ```
 
 ---
@@ -495,7 +521,7 @@ With the `claude-code` feature, `Provider::ClaudeCode` runs the local
 from the Claude CLI OAuth session.
 
 ```toml
-agentix = { version = "0.22.0", features = ["claude-code"] }
+agentix = { version = "0.24", features = ["claude-code"] }
 ```
 
 ```rust

@@ -157,6 +157,11 @@ pub fn agent(
                         yield AgentEvent::Reasoning(t);
                     }
 
+                    Some(LlmEvent::ReasoningSignature(_)) => {
+                        // Signatures are captured in AssistantState (provider_data)
+                        // at end-of-turn for the agent loop's purposes.
+                    }
+
                     Some(LlmEvent::ToolCallChunk(c)) => {
                         yield AgentEvent::ToolCallChunk(c);
                     }

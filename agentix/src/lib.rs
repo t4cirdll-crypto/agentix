@@ -48,6 +48,8 @@ pub mod agent;
 pub mod mcp;
 #[cfg(feature = "mcp-server")]
 pub mod mcp_server;
+#[cfg(feature = "server-anthropic")]
+pub mod server;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 

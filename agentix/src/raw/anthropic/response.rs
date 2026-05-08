@@ -1,14 +1,16 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Response {
     pub content: Vec<ResponseBlock>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub usage: Option<Usage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stop_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseBlock {
     Text {
@@ -21,7 +23,7 @@ pub enum ResponseBlock {
     },
     Thinking {
         thinking: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
     RedactedThinking {
@@ -29,7 +31,7 @@ pub enum ResponseBlock {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -52,7 +54,7 @@ impl From<Usage> for crate::types::UsageStats {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     MessageStart {
@@ -71,6 +73,7 @@ pub enum StreamEvent {
     },
     MessageDelta {
         delta: MessageDelta,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         usage: Option<Usage>,
     },
     MessageStop,
@@ -81,12 +84,13 @@ pub enum StreamEvent {
     Unknown,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageStart {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub usage: Option<Usage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockStart {
     Text { text: String },
@@ -95,7 +99,7 @@ pub enum ContentBlockStart {
     RedactedThinking { data: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockDelta {
     TextDelta { text: String },
@@ -104,12 +108,13 @@ pub enum ContentBlockDelta {
     SignatureDelta { signature: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MessageDelta {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stop_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StreamError {
     pub r#type: String,
     pub message: String,
