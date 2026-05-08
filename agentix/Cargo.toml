@@ -31,7 +31,8 @@ claude-code = [
     "dep:uuid",
 ]
 server-anthropic = ["dep:axum"]
-cli = ["server-anthropic", "claude-code", "dep:tracing-subscriber"]
+server-openai-chat = ["dep:axum"]
+cli = ["server-anthropic", "server-openai-chat", "claude-code", "dep:tracing-subscriber"]
 
 [dependencies]
 async-stream = "0.3"

@@ -16,9 +16,10 @@
 //! ```
 
 pub mod error;
-pub mod fallback;
 pub mod inbound;
 pub mod outbound;
+
+use crate::server::fallback;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use tokio::net::ToSocketAddrs;
 use tracing::{error, info};
 
 pub use error::{ErrorKind, ServerError};
-pub use fallback::UpstreamSpec;
+pub use crate::server::fallback::UpstreamSpec;
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -71,11 +72,16 @@ impl AnthropicServer {
     /// Build the axum router. Useful when embedding the server inside another
     /// axum application.
     pub fn router(&self) -> Router {
-        Router::new()
+        let mut r = Router::new()
             .route("/v1/messages", post(handle_messages))
-            .route("/v1/messages/count_tokens", post(handle_count_tokens))
-            .route("/v1/models", get(handle_models))
-            .fallback(handle_fallback)
+            .route("/v1/messages/count_tokens", post(handle_count_tokens));
+        // Only mount /v1/models when standing alone — when merged with the
+        // OpenAI Chat router it owns this path.
+        #[cfg(not(feature = "server-openai-chat"))]
+        {
+            r = r.route("/v1/models", get(handle_models));
+        }
+        r.fallback(handle_fallback)
             .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
             .with_state(self.clone())
     }
@@ -209,6 +215,7 @@ async fn handle_count_tokens(Json(body): Json<inbound::IncomingRequest>) -> Resp
     Json(json!({"input_tokens": total})).into_response()
 }
 
+#[cfg_attr(feature = "server-openai-chat", allow(dead_code))]
 async fn handle_models(State(server): State<AnthropicServer>) -> Response {
     let mut data: Vec<Value> = Vec::new();
     for (i, spec) in server.inner.chain.iter().enumerate() {

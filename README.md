@@ -80,8 +80,13 @@ agentix = { version = "0.24", features = ["claude-code"] }
 # `agentix::server::AnthropicServer`.
 agentix = { version = "0.24", features = ["server-anthropic"] }
 
-# `agentix` CLI binary — Anthropic Messages proxy with fallback. Wraps
-# server-anthropic with arg parsing for the headline use case.
+# OpenAI Chat Completions-compatible HTTP server (POST /v1/chat/completions,
+# GET /v1/models). Library API is `agentix::server::OpenAIChatServer`.
+# Can be combined with server-anthropic on the same bind port.
+agentix = { version = "0.24", features = ["server-openai-chat"] }
+
+# `agentix` CLI binary — proxy that speaks both Anthropic Messages AND OpenAI
+# Chat Completions on the same port, with a shared upstream fallback chain.
 agentix = { version = "0.24", features = ["cli"] }
 
 # Compile-time gate for full request/response body logging

@@ -15,7 +15,7 @@ use crate::msg::LlmEvent;
 use crate::request::{Provider, Request};
 use crate::types::CompleteResponse;
 
-use super::inbound::Translated;
+use super::translated::Translated;
 
 /// One upstream in the fallback chain.
 #[derive(Debug, Clone)]

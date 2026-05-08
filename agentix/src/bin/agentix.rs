@@ -337,8 +337,44 @@ async fn main() -> ExitCode {
     }
 
     let listen = cli.listen.unwrap_or_else(|| DEFAULT_LISTEN.to_string());
-    let server = AnthropicServer::new(chain);
-    if let Err(e) = server.listen(listen.as_str()).await {
+
+    let listener = match tokio::net::TcpListener::bind(listen.as_str()).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("bind {listen}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let local = match listener.local_addr() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("local_addr: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Merge every enabled reader's router so a single bind speaks all
+    // formats simultaneously.
+    let mut router = axum::Router::new();
+    let anthropic = AnthropicServer::new(chain.clone());
+    router = router.merge(anthropic.router());
+
+    #[cfg(feature = "server-openai-chat")]
+    {
+        use agentix::server::OpenAIChatServer;
+        let openai = OpenAIChatServer::new(chain.clone());
+        router = router.merge(openai.router());
+    }
+
+    let _ = chain; // chain may be otherwise unused when only one feature is on
+
+    tracing::info!(%local, "agentix proxy listening");
+
+    let serve = axum::serve(listener, router).with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("shutdown signal received");
+    });
+    if let Err(e) = serve.await {
         eprintln!("server error: {e}");
         return ExitCode::FAILURE;
     }

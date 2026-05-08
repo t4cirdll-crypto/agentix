@@ -1,5 +1,26 @@
 ## [Unreleased]
 
+### New features
+
+- **`server-openai-chat` feature** — OpenAI Chat Completions-compatible HTTP server. `POST /v1/chat/completions` (streaming SSE chunks + non-streaming JSON), `GET /v1/models`. Reasoning is exposed as `reasoning_content` on both inbound assistant messages and outbound delta/non-streaming responses (matches DeepSeek/Kimi/etc. convention).
+- The `agentix` CLI now serves both formats simultaneously on the same bind port — `/v1/messages` for Anthropic clients (Claude Code, claude-code-router) and `/v1/chat/completions` for OpenAI-compat clients (Cline, Continue, openai-python, vLLM clients). Selection is implicit by request path; the upstream fallback chain is shared.
+- Inbound translator handles the Chat Completions specifics that diverge from Anthropic: multi-`system`-message concatenation, `tool_call_id` ↔ agentix `Message::ToolResult { call_id }` mapping, `data:image/...;base64,...` URL parsing, `max_completion_tokens` precedence over `max_tokens`, named/object `tool_choice`, OpenAI-shape error envelope (`{"error":{"message","type","param","code"}}`).
+- Streaming chunk state machine maps agentix's `LlmEvent`s to `chat.completion.chunk` deltas: text → `delta.content`, reasoning → `delta.reasoning_content`, tool calls → `delta.tool_calls[]` with stable per-tool slot index (only the first chunk for each slot includes `id`/`type`/`name`; subsequent chunks are arguments-only). `stream_options.include_usage` triggers a trailing usage chunk; the stream terminates with `data: [DONE]`. Anthropic-only `LlmEvent::ReasoningSignature` is silently dropped (no Chat Completions field for it).
+
+### Internal changes
+
+- Server module reorganized: `server/translated.rs` (`Translated` intermediate, format-agnostic) and `server/fallback.rs` (`UpstreamSpec`, `complete_with_fallback`, `stream_with_fallback`) are now shared across all readers. `anthropic/{inbound,fallback}.rs` previously held these.
+- `AnthropicServer::router()` no longer mounts `/v1/models` when the `server-openai-chat` feature is enabled — the OpenAI Chat router owns that path under the merged binding (Anthropic clients tolerate 404 for `/v1/models`).
+
+### Tests
+
+- 16 new unit tests (10 inbound translation, 6 chunk state machine).
+- E2E verified against the official `openai` Python SDK against a `claude-code` upstream — non-streaming, streaming with `include_usage`, and non-streaming tool calls all produce SDK-parseable wire output.
+
+### Public API
+
+Additive only. New: `agentix::server::OpenAIChatServer` (gated by `server-openai-chat`); `agentix::server::Translated` re-exported from the new `server::translated` module; `agentix::server::UpstreamSpec` re-exported from the new `server::fallback` module (was `server::anthropic::fallback::UpstreamSpec` — both paths still work via the existing re-export at `server::anthropic::UpstreamSpec`).
+
 ---
 
 ## [0.24.0] - 2026-05-09

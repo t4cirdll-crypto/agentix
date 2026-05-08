@@ -11,6 +11,7 @@ use crate::request::{
 };
 
 use super::error::{ErrorKind, ServerError};
+use crate::server::translated::Translated;
 
 /// Anthropic system field. Accepts either a plain string or a list of system
 /// blocks. The agentix `Request::system_message` is a single string; we flatten
@@ -64,20 +65,6 @@ pub struct IncomingRequest {
     /// providers that accept top-level passthrough.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
-}
-
-/// Translation result.
-pub struct Translated {
-    pub system_prompt: Option<String>,
-    pub model_from_client: String,
-    pub max_tokens: u32,
-    pub messages: Vec<Message>,
-    pub tools: Vec<ToolDefinition>,
-    pub tool_choice: Option<ToolChoice>,
-    pub temperature: Option<f32>,
-    pub reasoning_effort: Option<ReasoningEffort>,
-    pub stream: bool,
-    pub extra_body: serde_json::Map<String, Value>,
 }
 
 /// Forward-passthrough fields from Anthropic's request body that map to
