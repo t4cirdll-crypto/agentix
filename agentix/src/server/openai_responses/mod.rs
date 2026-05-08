@@ -44,6 +44,11 @@ struct Inner {
     chain: Vec<UpstreamSpec>,
     http: reqwest::Client,
     store: Arc<SessionStore>,
+    /// When true, never persist session items and reject any request that
+    /// carries `previous_response_id`. Useful for multi-replica deployments
+    /// (where in-memory state can't be shared) and for environments that
+    /// must not retain conversation data.
+    stateless: bool,
 }
 
 impl OpenAIResponsesServer {
@@ -61,8 +66,32 @@ impl OpenAIResponsesServer {
         store: Arc<SessionStore>,
     ) -> Self {
         Self {
-            inner: Arc::new(Inner { chain, http, store }),
+            inner: Arc::new(Inner {
+                chain,
+                http,
+                store,
+                stateless: false,
+            }),
         }
+    }
+
+    /// Disable session storage. Even when clients send `store: true`, the
+    /// proxy never persists; clients sending `previous_response_id` are
+    /// rejected with `invalid_request_error`. Use for horizontal scaling
+    /// and zero-retention deployments.
+    pub fn stateless(self) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                chain: self.inner.chain.clone(),
+                http: self.inner.http.clone(),
+                store: self.inner.store.clone(),
+                stateless: true,
+            }),
+        }
+    }
+
+    pub fn is_stateless(&self) -> bool {
+        self.inner.stateless
     }
 
     pub fn router(&self) -> Router {
@@ -91,6 +120,15 @@ async fn handle_responses(
     Json(body): Json<wire::ResponsesRequest>,
 ) -> Response {
     let request_model = body.model.clone();
+    let stateless = server.inner.stateless;
+
+    if stateless && body.previous_response_id.is_some() {
+        return OpenAIError::invalid_request(
+            "this proxy is running in stateless mode; previous_response_id is not supported. \
+             Send the full conversation history in `input` each turn.",
+        )
+        .into_response();
+    }
 
     let prepared = match inbound::translate(
         body,
@@ -106,7 +144,7 @@ async fn handle_responses(
     let stream_requested = prepared.translated.stream;
     let parent_id = prepared.parent_id.clone();
     let stored_input = prepared.stored_input_items.clone();
-    let store_requested = prepared.store_requested;
+    let store_requested = prepared.store_requested && !stateless;
     let reasoning_summary = prepared.reasoning_summary.clone();
     let instructions = prepared.translated.system_prompt.clone();
     let store = server.inner.store.clone();
@@ -315,4 +353,56 @@ fn sse_events(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::Provider;
+    use serde_json::json;
+
+    fn server() -> OpenAIResponsesServer {
+        OpenAIResponsesServer::new(vec![UpstreamSpec::new(Provider::Anthropic, "k")])
+    }
+
+    #[test]
+    fn stateless_method_flips_flag() {
+        let s = server();
+        assert!(!s.is_stateless());
+        let s2 = s.stateless();
+        assert!(s2.is_stateless());
+    }
+
+    #[tokio::test]
+    async fn stateless_rejects_previous_response_id() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let s = server().stateless();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, s.router()).await;
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{addr}/v1/responses"))
+            .json(&json!({
+                "model": "x",
+                "input": "hi",
+                "previous_response_id": "resp_anything",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("stateless"),
+            "got message: {}",
+            body["error"]["message"]
+        );
+    }
 }

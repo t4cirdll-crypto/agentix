@@ -4,6 +4,7 @@
 
 - **`server-openai-responses` feature** — OpenAI Responses API-compatible HTTP server. `POST /v1/responses` (streaming SSE + non-streaming JSON). Required for clients that have deprecated Chat Completions support — notably **Codex CLI**, which only speaks Responses now. Full feature surface: input as string OR typed item array, instructions, function tools (flat shape), tool_choice (named or `{type:"function",name}`), reasoning config, multi-turn via `previous_response_id`, encrypted reasoning round-trip via `provider_data`. The streaming state machine emits the full Responses event set: `response.created` / `in_progress`, `output_item.added`/`done`, `content_part.added`/`done`, `output_text.delta`/`done`, `function_call_arguments.delta`/`done`, `reasoning_text.delta`/`done`, `response.completed` (with cumulative `output[]` snapshot).
 - **In-memory session store** for `previous_response_id` chaining. Bounded LRU + 1-hour TTL by default. Each successful response (streaming or non-streaming) persists the resolved input + output items keyed by response_id, so the next turn's `previous_response_id` walks the chain to recover history. Codex defaults `store=true` and relies on this.
+- **Stateless mode** (`--stateless` CLI flag, `OpenAIResponsesServer::stateless()` library API). Disables session storage even when clients send `store: true`; `previous_response_id` requests are rejected with `invalid_request_error`. Required for multi-replica deployments (where in-memory state can't be shared across instances) and for environments that must not retain conversation data.
 - **`server-openai-chat` feature** — OpenAI Chat Completions-compatible HTTP server. `POST /v1/chat/completions` (streaming SSE chunks + non-streaming JSON), `GET /v1/models`. Reasoning is exposed as `reasoning_content` on both inbound assistant messages and outbound delta/non-streaming responses (matches DeepSeek/Kimi/etc. convention).
 - The `agentix` CLI now serves both formats simultaneously on the same bind port — `/v1/messages` for Anthropic clients (Claude Code, claude-code-router) and `/v1/chat/completions` for OpenAI-compat clients (Cline, Continue, openai-python, vLLM clients). Selection is implicit by request path; the upstream fallback chain is shared.
 - Inbound translator handles the Chat Completions specifics that diverge from Anthropic: multi-`system`-message concatenation, `tool_call_id` ↔ agentix `Message::ToolResult { call_id }` mapping, `data:image/...;base64,...` URL parsing, `max_completion_tokens` precedence over `max_tokens`, named/object `tool_choice`, OpenAI-shape error envelope (`{"error":{"message","type","param","code"}}`).
@@ -16,7 +17,7 @@
 
 ### Tests
 
-- 23 new openai_responses unit tests (10 inbound, 6 outbound state machine, 4 session store, 3 misc).
+- 25 new openai_responses unit tests (10 inbound, 6 outbound state machine, 4 session store, 2 stateless mode, 3 misc).
 - 16 openai_chat unit tests (10 inbound, 6 chunk state machine).
 - E2E verified against the official `openai` Python SDK against a `claude-code` upstream:
   - **Chat Completions** (`/v1/chat/completions`) — non-streaming, streaming with `include_usage`, forced function tool calls.

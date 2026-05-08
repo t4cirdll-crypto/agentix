@@ -23,6 +23,9 @@ const DEFAULT_PRE_COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
 struct Cli {
     upstreams: Vec<UpstreamDraft>,
     listen: Option<String>,
+    /// Disable the OpenAI Responses session store. Forces every request to
+    /// carry full conversation history; rejects `previous_response_id`.
+    stateless: bool,
     print_help: bool,
     print_version: bool,
 }
@@ -87,6 +90,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         }
         if arg == "-V" || arg == "--version" {
             cli.print_version = true;
+            continue;
+        }
+        if arg == "--stateless" {
+            cli.stateless = true;
             continue;
         }
 
@@ -283,6 +290,10 @@ OPTIONS:
     -m, --model <MODEL>          Override the client's model field upstream
     -u, --base-url <URL>         Override the upstream's base URL
     -l, --listen <ADDR>          Bind address (default: 127.0.0.1:7878)
+        --stateless              Disable the Responses API session store —
+                                  every request must carry full input each
+                                  turn; previous_response_id is rejected.
+                                  Required for multi-replica deployments.
     -h, --help                   Show this help
     -V, --version                Show version
 
@@ -370,10 +381,12 @@ async fn main() -> ExitCode {
     {
         use agentix::server::OpenAIResponsesServer;
         let resp = OpenAIResponsesServer::new(chain.clone());
+        let resp = if cli.stateless { resp.stateless() } else { resp };
         router = router.merge(resp.router());
     }
 
     let _ = chain; // chain may be otherwise unused when only one feature is on
+    let _ = cli.stateless; // unused when server-openai-responses is off
 
     tracing::info!(%local, "agentix proxy listening");
 
@@ -469,5 +482,17 @@ mod tests {
         assert_eq!(cli.listen.as_deref(), Some("0.0.0.0:9999"));
         assert_eq!(cli.upstreams.len(), 1);
         assert_eq!(cli.upstreams[0].token.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn stateless_flag_default_false() {
+        let cli = parse_args(&["-i", "deepseek"]).unwrap();
+        assert!(!cli.stateless);
+    }
+
+    #[test]
+    fn stateless_flag_set() {
+        let cli = parse_args(&["--stateless", "-i", "deepseek"]).unwrap();
+        assert!(cli.stateless);
     }
 }
