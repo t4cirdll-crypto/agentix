@@ -30,7 +30,9 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+#[cfg(not(feature = "server-openai-chat"))]
+use axum::routing::get;
+use axum::routing::post;
 use futures::stream::{self, BoxStream, Stream, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::ToSocketAddrs;
@@ -72,6 +74,7 @@ impl AnthropicServer {
     /// Build the axum router. Useful when embedding the server inside another
     /// axum application.
     pub fn router(&self) -> Router {
+        #[cfg_attr(feature = "server-openai-chat", allow(unused_mut))]
         let mut r = Router::new()
             .route("/v1/messages", post(handle_messages))
             .route("/v1/messages/count_tokens", post(handle_count_tokens));

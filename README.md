@@ -85,8 +85,14 @@ agentix = { version = "0.24", features = ["server-anthropic"] }
 # Can be combined with server-anthropic on the same bind port.
 agentix = { version = "0.24", features = ["server-openai-chat"] }
 
-# `agentix` CLI binary — proxy that speaks both Anthropic Messages AND OpenAI
-# Chat Completions on the same port, with a shared upstream fallback chain.
+# OpenAI Responses API-compatible HTTP server (POST /v1/responses). Required
+# for Codex CLI and other clients that have deprecated Chat Completions.
+# Includes an in-memory session store for previous_response_id chaining.
+agentix = { version = "0.24", features = ["server-openai-responses"] }
+
+# `agentix` CLI binary — proxy that speaks all three formats simultaneously
+# (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses) on one
+# port, with a shared upstream fallback chain.
 agentix = { version = "0.24", features = ["cli"] }
 
 # Compile-time gate for full request/response body logging

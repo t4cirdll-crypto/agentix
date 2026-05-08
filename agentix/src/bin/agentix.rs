@@ -366,6 +366,13 @@ async fn main() -> ExitCode {
         router = router.merge(openai.router());
     }
 
+    #[cfg(feature = "server-openai-responses")]
+    {
+        use agentix::server::OpenAIResponsesServer;
+        let resp = OpenAIResponsesServer::new(chain.clone());
+        router = router.merge(resp.router());
+    }
+
     let _ = chain; // chain may be otherwise unused when only one feature is on
 
     tracing::info!(%local, "agentix proxy listening");

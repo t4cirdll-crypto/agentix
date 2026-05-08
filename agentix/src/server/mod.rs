@@ -23,6 +23,9 @@ pub mod anthropic;
 #[cfg(feature = "server-openai-chat")]
 pub mod openai_chat;
 
+#[cfg(feature = "server-openai-responses")]
+pub mod openai_responses;
+
 pub use anthropic::AnthropicServer;
 pub use anthropic::error::ServerError;
 pub use fallback::UpstreamSpec;
@@ -30,3 +33,6 @@ pub use translated::Translated;
 
 #[cfg(feature = "server-openai-chat")]
 pub use openai_chat::OpenAIChatServer;
+
+#[cfg(feature = "server-openai-responses")]
+pub use openai_responses::OpenAIResponsesServer;
