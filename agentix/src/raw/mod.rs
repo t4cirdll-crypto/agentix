@@ -15,6 +15,7 @@ pub mod gemini;
 pub mod glm;
 pub mod grok;
 pub mod kimi;
+pub mod mimo;
 pub mod openai;
 pub mod openrouter;
 pub mod shared;

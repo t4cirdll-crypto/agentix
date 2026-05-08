@@ -85,31 +85,51 @@ fn assistant_replay_message(
         content,
         reasoning: _,
         tool_calls,
-        provider_data: _,
+        provider_data,
     } = assistant
     else {
         return None;
     };
 
     let mut id_map = HashMap::new();
-    let mut blocks = Vec::new();
-    if let Some(text) = content
-        && !text.is_empty()
+
+    // Preferred path: a previous turn captured the raw `anthropic_content`
+    // blocks (incl. thinking + signature) into `provider_data`. Replay them
+    // verbatim so signatures stay valid. Anthropic hashes (model, content)
+    // and re-validates on submission; any byte mutation breaks the chain.
+    // tool_use ids in captured blocks are already `toolu_*`, so id_map stays
+    // empty and `remap_tool_use_ids` is a no-op for the matching tool_results.
+    let blocks: Vec<serde_json::Value> = if let Some(raw_blocks) = provider_data
+        .as_ref()
+        .and_then(|pd| pd.get("anthropic_content"))
+        .and_then(|x| x.as_array())
+        .filter(|arr| !arr.is_empty())
     {
-        blocks.push(serde_json::json!({"type": "text", "text": text}));
-    }
-    for tc in tool_calls {
-        let id = ensure_toolu_id(&tc.id, &mut id_map);
-        let input: serde_json::Value =
-            serde_json::from_str(&tc.arguments).unwrap_or_else(|_| serde_json::json!({}));
-        blocks.push(serde_json::json!({
-            "type": "tool_use",
-            "id": id,
-            "name": format!("mcp__{}__{}", MCP_SERVER_NAME, tc.name),
-            "input": input,
-            "caller": {"type": "direct"},
-        }));
-    }
+        raw_blocks.clone()
+    } else {
+        // Fallback: reconstruct from `content` + `tool_calls`. This loses any
+        // thinking blocks, so the model starts a fresh chain-of-thought next
+        // turn — but it's signature-safe.
+        let mut blocks = Vec::new();
+        if let Some(text) = content
+            && !text.is_empty()
+        {
+            blocks.push(serde_json::json!({"type": "text", "text": text}));
+        }
+        for tc in tool_calls {
+            let id = ensure_toolu_id(&tc.id, &mut id_map);
+            let input: serde_json::Value =
+                serde_json::from_str(&tc.arguments).unwrap_or_else(|_| serde_json::json!({}));
+            blocks.push(serde_json::json!({
+                "type": "tool_use",
+                "id": id,
+                "name": format!("mcp__{}__{}", MCP_SERVER_NAME, tc.name),
+                "input": input,
+                "caller": {"type": "direct"},
+            }));
+        }
+        blocks
+    };
 
     Some((
         serde_json::json!({
@@ -278,10 +298,18 @@ async fn start_claude(
         .spawn()
         .map_err(|e| ApiError::Other(format!("spawn claude: {e}")))?;
 
+    let cc_debug = std::env::var("AGENTIX_CC_DEBUG").is_ok();
+    if cc_debug {
+        eprintln!("[cc-argv] claude {}", args.join(" "));
+    }
+
     if let Some(mut stdin) = child.stdin.take() {
         for msg in stdin_prefix {
             let mut line = msg.to_string();
             line.push('\n');
+            if cc_debug {
+                eprintln!("[cc-stdin-replay] {line}");
+            }
             if let Err(e) = stdin.write_all(line.as_bytes()).await {
                 warn!(error = %e, "write stdin replay");
             }
@@ -307,6 +335,9 @@ async fn start_claude(
         }
         let mut line = msg.to_string();
         line.push('\n');
+        if cc_debug {
+            eprintln!("[cc-stdin-user] {line}");
+        }
         if let Err(e) = stdin.write_all(line.as_bytes()).await {
             warn!(error = %e, "write stdin");
         }
@@ -314,9 +345,13 @@ async fn start_claude(
     }
 
     if let Some(err) = child.stderr.take() {
+        let cc_debug = cc_debug;
         tokio::spawn(async move {
             let mut elines = BufReader::new(err).lines();
             while let Ok(Some(l)) = elines.next_line().await {
+                if cc_debug {
+                    eprintln!("[cc-stderr] {l}");
+                }
                 warn!(target: "claude_code_stderr", "{}", l);
             }
         });
@@ -330,19 +365,39 @@ async fn start_claude(
 #[derive(Default)]
 struct StreamState {
     tool_bufs: Vec<Option<PartialToolCall>>,
+    /// Raw JSON of each content block, indexed by content-block index, kept
+    /// **verbatim** as it streams in (incl. fields like `caller` that claude
+    /// emits but our struct types don't model). Mutated in place by deltas.
+    /// On `content_block_stop` for tool_use blocks the partial input-JSON
+    /// string from `tool_bufs[idx].arguments` is parsed and placed at
+    /// `block_bufs[idx]["input"]`. At `message_delta` these compose the
+    /// `anthropic_content` envelope shipped via `LlmEvent::AssistantState`
+    /// for round-tripping thinking signatures across turns.
+    block_bufs: Vec<Option<serde_json::Value>>,
 }
 
-fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -> Vec<LlmEvent> {
+/// Outcome of processing one stream-json line.
+#[derive(Default)]
+struct LineOutcome {
+    events: Vec<LlmEvent>,
+    /// `true` once we have seen a `message_delta` with a `stop_reason` —
+    /// the canonical end-of-turn signal in claude's stream-json output.
+    /// Final usage is on `event.usage`; ToolCalls have already been flushed
+    /// from `content_block_stop` for their respective indices.
+    turn_done: bool,
+}
+
+fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -> LineOutcome {
+    let mut out = LineOutcome::default();
     let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
     if ty != "stream_event" {
-        return Vec::new();
+        return out;
     }
     let ev = match v.get("event") {
         Some(e) => e,
-        None => return Vec::new(),
+        None => return out,
     };
     let ety = ev.get("type").and_then(|x| x.as_str()).unwrap_or("");
-    let mut out = Vec::new();
 
     match ety {
         "content_block_start" => {
@@ -351,6 +406,14 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
                 Some(b) => b,
                 None => return out,
             };
+            // Capture the entire content_block JSON verbatim — `caller`,
+            // model-private fields, anything else claude emits — so the round-
+            // trip is byte-faithful and signatures stay valid.
+            if state.block_bufs.len() <= idx {
+                state.block_bufs.resize_with(idx + 1, || None);
+            }
+            state.block_bufs[idx] = Some(block.clone());
+
             if block.get("type").and_then(|x| x.as_str()) == Some("tool_use") {
                 let id = block
                     .get("id")
@@ -371,7 +434,7 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
                     name: name.clone(),
                     arguments: String::new(),
                 });
-                out.push(LlmEvent::ToolCallChunk(ToolCallChunk {
+                out.events.push(LlmEvent::ToolCallChunk(ToolCallChunk {
                     id,
                     name,
                     delta: String::new(),
@@ -390,14 +453,46 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
                     if let Some(t) = delta.get("text").and_then(|x| x.as_str())
                         && !t.is_empty()
                     {
-                        out.push(LlmEvent::Token(t.to_string()));
+                        // Mirror into the raw-block JSON so the verbatim copy
+                        // we emit at message_delta has the full text.
+                        if let Some(Some(slot)) = state.block_bufs.get_mut(idx)
+                            && let Some(field) = slot
+                                .get_mut("text")
+                                .and_then(|x| x.as_str().map(str::to_string))
+                        {
+                            slot["text"] = serde_json::Value::String(field + t);
+                        }
+                        out.events.push(LlmEvent::Token(t.to_string()));
                     }
                 }
                 "thinking_delta" => {
                     if let Some(t) = delta.get("thinking").and_then(|x| x.as_str())
                         && !t.is_empty()
                     {
-                        out.push(LlmEvent::Reasoning(t.to_string()));
+                        if let Some(Some(slot)) = state.block_bufs.get_mut(idx)
+                            && let Some(field) = slot
+                                .get_mut("thinking")
+                                .and_then(|x| x.as_str().map(str::to_string))
+                        {
+                            slot["thinking"] = serde_json::Value::String(field + t);
+                        }
+                        out.events.push(LlmEvent::Reasoning(t.to_string()));
+                    }
+                }
+                "signature_delta" => {
+                    // Append claude's signature for this thinking block. Anthropic
+                    // hashes (model_id, thinking_text) → signature; round-tripping
+                    // it verbatim lets the next turn validate without re-thinking.
+                    if let Some(sig) = delta.get("signature").and_then(|x| x.as_str())
+                        && !sig.is_empty()
+                        && let Some(Some(slot)) = state.block_bufs.get_mut(idx)
+                    {
+                        let cur = slot
+                            .get("signature")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        slot["signature"] = serde_json::Value::String(cur + sig);
                     }
                 }
                 "input_json_delta" => {
@@ -406,7 +501,7 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
                         && let Some(Some(partial)) = state.tool_bufs.get_mut(idx)
                     {
                         partial.arguments.push_str(partial_json);
-                        out.push(LlmEvent::ToolCallChunk(ToolCallChunk {
+                        out.events.push(LlmEvent::ToolCallChunk(ToolCallChunk {
                             id: partial.id.clone(),
                             name: partial.name.clone(),
                             delta: partial_json.to_string(),
@@ -416,6 +511,62 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
                 }
                 _ => {}
             }
+        }
+        "content_block_stop" => {
+            let idx = ev.get("index").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+            // For tool_use: parse the buffered partial-JSON string into a
+            // proper JSON object and slot it into `block_bufs[idx]["input"]`,
+            // then emit the final ToolCall event.
+            if let Some(slot) = state.tool_bufs.get_mut(idx)
+                && let Some(partial) = slot.take()
+            {
+                let arguments = if partial.arguments.is_empty() {
+                    "{}".to_string()
+                } else {
+                    partial.arguments
+                };
+                if let Some(Some(block)) = state.block_bufs.get_mut(idx) {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&arguments).unwrap_or_else(|_| serde_json::json!({}));
+                    block["input"] = parsed;
+                }
+                out.events.push(LlmEvent::ToolCall(ToolCall {
+                    id: partial.id,
+                    name: partial.name,
+                    arguments,
+                }));
+            }
+        }
+        "message_delta" => {
+            // End-of-turn marker. `event.usage` carries the FINAL counts for
+            // this turn — `assistant`-snapshot usages are running estimates.
+            if let Some(u) = ev.get("usage") {
+                out.events.push(LlmEvent::Usage(parse_usage(u)));
+            }
+
+            // Bundle the raw block JSON into the `anthropic_content` envelope
+            // (same wire shape as the anthropic provider) and ship it out as
+            // AssistantState — gated on thinking+tool_use, the combination
+            // where Anthropic enforces signature round-trip on the next turn.
+            // Pure thinking-no-tools or pure text turns don't need it.
+            let blocks: Vec<serde_json::Value> =
+                state.block_bufs.iter().flatten().cloned().collect();
+            let has_thinking = blocks.iter().any(|b| {
+                matches!(
+                    b.get("type").and_then(|x| x.as_str()),
+                    Some("thinking") | Some("redacted_thinking")
+                )
+            });
+            let has_tool_use = blocks
+                .iter()
+                .any(|b| b.get("type").and_then(|x| x.as_str()) == Some("tool_use"));
+            if has_thinking && has_tool_use {
+                out.events.push(LlmEvent::AssistantState(serde_json::json!({
+                    "anthropic_content": blocks,
+                })));
+            }
+
+            out.turn_done = true;
         }
         _ => {}
     }
@@ -438,15 +589,13 @@ pub(crate) async fn stream_claude_code(
         .ok_or_else(|| ApiError::Other("claude subprocess has no stdout".into()))?;
     let mut lines = BufReader::new(stdout).lines();
 
+    let cc_debug = std::env::var("AGENTIX_CC_DEBUG").is_ok();
     Ok(stream! {
         // Moved into the generator; explicit drops below order cleanup.
         let guard = guard;
         let mut child = child;
         let mut state = StreamState::default();
         let mut got_terminal = false;
-        // Stashed usage from the most recent `assistant` event; emitted when
-        // we see the real-payload event (or at stream end if none arrives).
-        let mut pending_usage: Option<UsageStats> = None;
 
         'outer: loop {
             let line = match lines.next_line().await {
@@ -459,6 +608,9 @@ pub(crate) async fn stream_claude_code(
                 }
             };
             if line.trim().is_empty() { continue; }
+            if cc_debug {
+                eprintln!("[cc-stdout] {line}");
+            }
             let v: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
                 Err(e) => {
@@ -467,103 +619,54 @@ pub(crate) async fn stream_claude_code(
                 }
             };
 
-            for ev in translate_stream_event_line(&v, &mut state) {
+            // Translate stream-json event into LlmEvents. `turn_done` flips
+            // when we see `message_delta` (claude's true end-of-turn signal):
+            // tool_use blocks have already been flushed via `content_block_stop`,
+            // and final usage rides on the `message_delta` itself.
+            let outcome = translate_stream_event_line(&v, &mut state);
+            for ev in outcome.events {
                 yield ev;
             }
-
-            let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-            match ty {
-                "assistant" => {
-                    // A single turn can produce multiple `assistant` events when
-                    // extended thinking is active: a thinking-only message first,
-                    // then the "real" message with text/tool_use. Treat the turn
-                    // as finished only when we see a non-thinking block.
-                    let msg = match v.get("message") { Some(m) => m, None => continue };
-                    let content = msg.get("content").and_then(|c| c.as_array());
-                    let has_payload = content
-                        .map(|arr| arr.iter().any(|b| {
-                            matches!(
-                                b.get("type").and_then(|x| x.as_str()),
-                                Some("text") | Some("tool_use")
-                            )
-                        }))
-                        .unwrap_or(false);
-
-                    // Each `assistant` event carries the same `usage` payload
-                    // (input/cache/cumulative output) for this turn. Emitting on
-                    // every event makes downstream accumulators (e.g. `agent.rs`
-                    // total_usage) double-count the input. Emit once: prefer the
-                    // real-payload event; fall back to the thinking-only event's
-                    // usage if no payload event arrives.
-                    if let Some(u) = msg.get("usage") {
-                        pending_usage = Some(parse_usage(u));
-                    }
-
-                    if !has_payload {
-                        // Thinking-only assistant; wait for the next one.
-                        continue;
-                    }
-
-                    if let Some(u) = pending_usage.take() {
-                        yield LlmEvent::Usage(u);
-                    }
-
-                    if let Some(blocks) = content {
-                        for block in blocks {
-                            if block.get("type").and_then(|x| x.as_str()) == Some("tool_use") {
-                                let id = block.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                                let raw_name = block.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                                let input = block.get("input").cloned().unwrap_or(serde_json::json!({}));
-                                let arguments = serde_json::to_string(&input).unwrap_or_default();
-                                yield LlmEvent::ToolCall(ToolCall {
-                                    id,
-                                    name: strip_mcp_prefix(raw_name),
-                                    arguments,
-                                });
-                            }
-                        }
-                    }
-                    yield LlmEvent::Done;
-                    got_terminal = true;
-                    break 'outer;
-                }
-                "result" => {
-                    let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
-                    let is_error = v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false);
-                    if subtype == "success" && !is_error {
-                        yield LlmEvent::Done;
-                    } else {
-                        warn!(payload = %v, "claude-code non-success result");
-                        let msg = v.get("result")
-                            .and_then(|x| x.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| {
-                                if subtype.is_empty() {
-                                    "unknown error".to_string()
-                                } else {
-                                    subtype.to_string()
-                                }
-                            });
-                        yield LlmEvent::Error(msg);
-                    }
-                    got_terminal = true;
-                    break 'outer;
-                }
-                _ => {}
+            if outcome.turn_done {
+                yield LlmEvent::Done;
+                got_terminal = true;
+                break 'outer;
             }
-        }
 
-        // Flush stashed usage if the stream ended without a real-payload
-        // assistant event (e.g. thinking-only refusal).
-        if let Some(u) = pending_usage.take() {
-            yield LlmEvent::Usage(u);
+            // `result` only fires after claude-code's *internal* multi-turn
+            // loop ends; with stream-json input we typically break on
+            // `message_delta` long before that. Keep this as a safety net for
+            // turns that finish without a `message_delta` (e.g. errors).
+            let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+            if ty == "result" {
+                let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
+                let is_error = v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false);
+                if subtype == "success" && !is_error {
+                    yield LlmEvent::Done;
+                } else {
+                    warn!(payload = %v, "claude-code non-success result");
+                    let msg = v.get("result")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            if subtype.is_empty() {
+                                "unknown error".to_string()
+                            } else {
+                                subtype.to_string()
+                            }
+                        });
+                    yield LlmEvent::Error(msg);
+                }
+                got_terminal = true;
+                break 'outer;
+            }
         }
 
         if !got_terminal {
             match child.wait().await {
                 Ok(status) if status.success() => {
                     yield LlmEvent::Error(
-                        "claude exited without emitting assistant or result".into(),
+                        "claude exited without emitting message_delta or result".into(),
                     );
                 }
                 Ok(status) => {
@@ -584,156 +687,39 @@ pub(crate) async fn stream_claude_code(
 // ── complete_claude_code ────────────────────────────────────────────────────
 
 pub(crate) async fn complete_claude_code(
-    _token: &str,
-    _http: &reqwest::Client,
+    token: &str,
+    http: &reqwest::Client,
     config: &AgentConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Result<CompleteResponse, ApiError> {
-    let (guard, mut child) = start_claude(config, messages, tools).await?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| ApiError::Other("claude subprocess has no stdout".into()))?;
-    let mut lines = BufReader::new(stdout).lines();
+    // Aggregate the streaming events into a single `CompleteResponse`. Sharing
+    // the parser keeps the `assistant`-checkpoint vs `message_delta` boundary
+    // logic in exactly one place.
+    let mut stream = stream_claude_code(token, http, config, messages, tools).await?;
 
     let mut content_buf = String::new();
     let mut reasoning_buf = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut usage = UsageStats::default();
-    // stream-json input mode never populates `message.stop_reason` or emits a
-    // `message_delta` event — the only signal is whether the assistant turn
-    // produced tool_use blocks. Overridden below if the CLI ever does send a
-    // concrete stop_reason.
-    let mut finish_reason: Option<FinishReason> = None;
-    let mut err: Option<ApiError> = None;
-    let mut got_terminal = false;
 
-    loop {
-        let line = match lines.next_line().await {
-            Ok(Some(l)) => l,
-            Ok(None) => break,
-            Err(e) => {
-                err = Some(ApiError::Stream(format!("read stdout: {e}")));
-                break;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, line = %line, "malformed stream-json line");
-                continue;
-            }
-        };
-        match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
-            "assistant" => {
-                // Extended thinking produces a thinking-only `assistant` event
-                // before the real payload. Don't terminate on it.
-                let msg = match v.get("message") {
-                    Some(m) => m,
-                    None => continue,
-                };
-                let mut saw_payload = false;
-                if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in content {
-                        match block.get("type").and_then(|x| x.as_str()).unwrap_or("") {
-                            "text" => {
-                                if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
-                                    content_buf.push_str(t);
-                                    saw_payload = true;
-                                }
-                            }
-                            "thinking" => {
-                                if let Some(t) = block.get("thinking").and_then(|x| x.as_str()) {
-                                    reasoning_buf.push_str(t);
-                                }
-                            }
-                            "tool_use" => {
-                                let id = block
-                                    .get("id")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let raw_name =
-                                    block.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                                let input =
-                                    block.get("input").cloned().unwrap_or(serde_json::json!({}));
-                                let arguments = serde_json::to_string(&input).unwrap_or_default();
-                                tool_calls.push(ToolCall {
-                                    id,
-                                    name: strip_mcp_prefix(raw_name),
-                                    arguments,
-                                });
-                                saw_payload = true;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if let Some(u) = msg.get("usage") {
-                    usage = parse_usage(u);
-                }
-                if let Some(sr) = msg.get("stop_reason").and_then(|x| x.as_str()) {
-                    finish_reason = Some(FinishReason::from(sr));
-                }
-                if !saw_payload {
-                    continue;
-                }
-                got_terminal = true;
-                break;
-            }
-            "result" => {
-                let subtype = v.get("subtype").and_then(|x| x.as_str()).unwrap_or("");
-                let is_error = v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false);
-                if subtype != "success" || is_error {
-                    warn!(payload = %v, "claude-code non-success result");
-                    let msg = v
-                        .get("result")
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            if subtype.is_empty() {
-                                "unknown error".to_string()
-                            } else {
-                                subtype.to_string()
-                            }
-                        });
-                    err = Some(ApiError::Llm(msg));
-                }
-                got_terminal = true;
-                break;
-            }
+    while let Some(ev) = stream.next().await {
+        match ev {
+            LlmEvent::Token(t) => content_buf.push_str(&t),
+            LlmEvent::Reasoning(t) => reasoning_buf.push_str(&t),
+            LlmEvent::ToolCall(tc) => tool_calls.push(tc),
+            LlmEvent::Usage(u) => usage = u,
+            LlmEvent::Error(e) => return Err(ApiError::Llm(e)),
+            LlmEvent::Done => break,
             _ => {}
         }
     }
 
-    if err.is_none() && !got_terminal {
-        err = Some(match child.wait().await {
-            Ok(status) if status.success() => {
-                ApiError::Other("claude exited without emitting assistant or result".into())
-            }
-            Ok(status) => ApiError::Other(format!("claude exited with status {status}")),
-            Err(e) => ApiError::Other(format!("wait claude: {e}")),
-        });
-    }
-
-    drop(child);
-    drop(guard);
-
-    if let Some(e) = err {
-        return Err(e);
-    }
-
-    let finish_reason = finish_reason.unwrap_or({
-        if tool_calls.is_empty() {
-            FinishReason::Stop
-        } else {
-            FinishReason::ToolCalls
-        }
-    });
+    let finish_reason = if tool_calls.is_empty() {
+        FinishReason::Stop
+    } else {
+        FinishReason::ToolCalls
+    };
 
     Ok(CompleteResponse {
         content: if content_buf.is_empty() {

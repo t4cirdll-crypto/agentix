@@ -708,8 +708,7 @@ impl Request {
                 .await
             }
             Provider::Mimo => {
-                crate::raw::anthropic::stream_mimo(&self.api_key, http, &config, messages, tools)
-                    .await
+                crate::raw::mimo::stream_mimo(&self.api_key, http, &config, messages, tools).await
             }
             Provider::Kimi => {
                 crate::raw::kimi::stream_kimi(&self.api_key, http, &config, messages, tools).await
@@ -790,8 +789,7 @@ impl Request {
                 .await
             }
             Provider::Mimo => {
-                crate::raw::anthropic::complete_mimo(&self.api_key, http, &config, messages, tools)
-                    .await
+                crate::raw::mimo::complete_mimo(&self.api_key, http, &config, messages, tools).await
             }
             Provider::Kimi => {
                 crate::raw::kimi::complete_kimi(&self.api_key, http, &config, messages, tools).await

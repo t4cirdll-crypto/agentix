@@ -1,3 +1,17 @@
+//! Mimo (xiaomimimo) provider — Anthropic-compatible API at
+//! `https://api.xiaomimimo.com/anthropic/v1/messages`.
+//!
+//! The wire format matches Anthropic's Messages API closely but with a few
+//! deliberate omissions / differences:
+//!   - `thinking.type` is `enabled` / `disabled` only (no `adaptive`).
+//!   - There is no `output_config.effort` field.
+//!   - `max_tokens` is optional; when unset the server picks a per-model
+//!     default (v2.5-pro = 131072, v2-flash = 65536, others = 32768).
+//!   - `stop_reason` may include the Mimo-specific `repetition_truncation`.
+//!
+//! Auth: `api-key: $MIMO_API_KEY` (Bearer is also accepted by the server, but
+//! we use api-key for parity with the documented examples).
+
 pub mod request;
 pub mod response;
 
@@ -17,41 +31,26 @@ use crate::types::{
 
 use response::{ContentBlockDelta, ContentBlockStart, ResponseBlock, StreamEvent};
 
-pub(crate) async fn stream_anthropic(
-    token: &str,
-    http: &reqwest::Client,
-    config: &AgentConfig,
-    messages: &[Message],
-    tools: &[ToolDefinition],
-) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
-    stream_anthropic_with_post_config(
-        token,
-        http,
-        config,
-        messages,
-        tools,
-        PostConfig {
-            use_query_key: false,
-            auth_header: Some("x-api-key"),
-            extra_headers: &[("anthropic-version", "2023-06-01")],
-            max_retries: config.max_retries,
-            retry_delay_ms: config.retry_delay_ms,
-        },
-    )
-    .await
+fn mimo_post_config(config: &AgentConfig) -> PostConfig {
+    PostConfig {
+        use_query_key: false,
+        auth_header: Some("api-key"),
+        extra_headers: &[],
+        max_retries: config.max_retries,
+        retry_delay_ms: config.retry_delay_ms,
+    }
 }
 
-async fn stream_anthropic_with_post_config(
+pub(crate) async fn stream_mimo(
     token: &str,
     http: &reqwest::Client,
     config: &AgentConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
-    post_config: PostConfig,
 ) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
-    let req = request::build_anthropic_request(config, messages, tools, true);
+    let req = request::build_mimo_request(config, messages, tools, true);
     let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
-    let resp = post_streaming(http, &url, &req, token, &post_config).await?;
+    let resp = post_streaming(http, &url, &req, token, &mimo_post_config(config)).await?;
 
     Ok(async_stream::stream! {
         let mut bufs = StreamBufs::new();
@@ -77,7 +76,7 @@ async fn stream_anthropic_with_post_config(
                             for lev in parse_stream_event(chunk, &mut bufs, &mut blocks) { yield lev; }
                         }
                         Err(e) => {
-                            debug!(data = %ev.data, error = %e, "anthropic chunk parse failed");
+                            debug!(data = %ev.data, error = %e, "mimo chunk parse failed");
                         }
                     }
                 }
@@ -88,9 +87,11 @@ async fn stream_anthropic_with_post_config(
             yield LlmEvent::Error("stream ended without message_stop".to_string());
         }
         for tc in finalize(&mut bufs) { yield LlmEvent::ToolCall(tc); }
-        // Only emit provider_data when the turn has both thinking AND tool_use
-        // blocks — that's the combination where Anthropic enforces signature
-        // round-trip on the next turn.
+        // Emit provider_data when the turn has both thinking AND tool_use.
+        // Mimo's docs explicitly say: in extended-thinking multi-turn tool
+        // calls, "建议在后续每次请求的 messages 数组中保留所有历史 thinking
+        // 内容块，以获得最佳表现". Round-tripping the raw blocks is the
+        // mechanism for that.
         if let Some(state) = assistant_state_from_blocks(&blocks) {
             yield LlmEvent::AssistantState(state);
         }
@@ -99,45 +100,20 @@ async fn stream_anthropic_with_post_config(
     .boxed())
 }
 
-pub(crate) async fn complete_anthropic(
+pub(crate) async fn complete_mimo(
     token: &str,
     http: &reqwest::Client,
     config: &AgentConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Result<CompleteResponse, ApiError> {
-    complete_anthropic_with_post_config(
-        token,
-        http,
-        config,
-        messages,
-        tools,
-        PostConfig {
-            use_query_key: false,
-            auth_header: Some("x-api-key"),
-            extra_headers: &[("anthropic-version", "2023-06-01")],
-            max_retries: config.max_retries,
-            retry_delay_ms: config.retry_delay_ms,
-        },
-    )
-    .await
-}
-
-async fn complete_anthropic_with_post_config(
-    token: &str,
-    http: &reqwest::Client,
-    config: &AgentConfig,
-    messages: &[Message],
-    tools: &[ToolDefinition],
-    post_config: PostConfig,
-) -> Result<CompleteResponse, ApiError> {
-    let req = request::build_anthropic_request(config, messages, tools, false);
+    let req = request::build_mimo_request(config, messages, tools, false);
     let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
-    let body = post_json(http, &url, &req, token, &post_config).await?;
+    let body = post_json(http, &url, &req, token, &mimo_post_config(config)).await?;
 
     // Parse twice: once structurally for content/tool_calls/reasoning, once
     // as a raw Value to preserve the full content array for round-tripping
-    // thinking blocks with signatures.
+    // thinking blocks (Mimo docs: keep history thinking blocks across turns).
     let raw_value: serde_json::Value = serde_json::from_str(&body).map_err(ApiError::Json)?;
     let raw: response::Response = serde_json::from_str(&body).map_err(ApiError::Json)?;
 
@@ -166,14 +142,11 @@ async fn complete_anthropic_with_post_config(
         }
     }
 
-    // Only preserve provider_data when the turn has both thinking AND tool
-    // calls — that's when Anthropic enforces signature round-trip. Pure
-    // thinking-no-tools turns don't require it (the API strips them).
     let provider_data = if has_thinking && !tool_calls.is_empty() {
         raw_value
             .get("content")
             .cloned()
-            .map(anthropic_content_to_provider_data)
+            .map(mimo_content_to_provider_data)
     } else {
         None
     };
@@ -195,16 +168,27 @@ async fn complete_anthropic_with_post_config(
         finish_reason: raw
             .stop_reason
             .as_deref()
-            .map(FinishReason::from)
+            .map(map_mimo_stop_reason)
             .unwrap_or_default(),
     })
 }
 
-/// Wrap the raw content array in a tagged envelope so the request serializer
-/// can identify Anthropic's format if another provider ever emits
-/// provider_data of a different shape. The wrapper also isolates callers from
-/// the raw Anthropic content shape (they should treat it as opaque).
-fn anthropic_content_to_provider_data(content: serde_json::Value) -> serde_json::Value {
+/// Map Mimo's stop_reason values to `FinishReason`. Mimo's set is:
+/// `end_turn`, `max_tokens`, `tool_use`, `content_filter`, `repetition_truncation`.
+/// The first four go through the shared `From<&str>` impl unchanged; the
+/// Mimo-specific `repetition_truncation` is a hard cut on detected loops, so
+/// we surface it as `Length` (the variant whose `is_truncated()` returns true).
+fn map_mimo_stop_reason(s: &str) -> FinishReason {
+    match s {
+        "repetition_truncation" => FinishReason::Length,
+        other => FinishReason::from(other),
+    }
+}
+
+/// Wrap the raw content array in a tagged envelope. Same `anthropic_content`
+/// tag as the anthropic provider since the wire shape is identical — this lets
+/// the request builder consume `provider_data` symmetrically across both.
+fn mimo_content_to_provider_data(content: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "anthropic_content": content,
     })
@@ -303,6 +287,9 @@ fn parse_stream_event(
                     vec![LlmEvent::Reasoning(thinking)]
                 }
                 ContentBlockDelta::SignatureDelta { signature } => {
+                    // Mimo's documented stream events list (text/thinking/
+                    // input_json) doesn't include signature_delta, but if the
+                    // server does emit it we capture it for round-tripping.
                     if let Some(Some(BlockBuild::Thinking { signature: sig, .. })) =
                         blocks.get_mut(idx)
                     {

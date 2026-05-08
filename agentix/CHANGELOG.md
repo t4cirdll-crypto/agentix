@@ -1,6 +1,34 @@
 ## [Unreleased]
 
-- Added `Provider::Mimo` / `Request::mimo()` for Xiaomi MiMo's Anthropic-compatible Messages API. Defaults to `https://api.xiaomimimo.com/anthropic`, model `mimo-v2.5-pro`, and sends `api-key` authentication.
+---
+
+## [0.23.0] - 2026-05-08
+
+### Summary
+
+Two behaviour fixes in providers that were previously silently producing the wrong wire format:
+
+- **`Provider::ClaudeCode`** now correctly handles multi-turn tool loops. The provider was treating intermediate `assistant` snapshot events as turn-final, killing the subprocess before the model could emit `tool_use` blocks (typical pattern when extended thinking runs first). The end-of-turn signal is now `stream_event { type: "message_delta" }`, which is what the wire actually means. Final `usage` (including `output_tokens`) is also taken from `message_delta` instead of an early `assistant` snapshot.
+- **`Provider::Mimo`** is split out of the shared Anthropic implementation (`raw::mimo::*`) and brought into line with [Xiaomi MiMo's documented spec](https://api.xiaomimimo.com): `thinking.type` only emits `enabled`/`disabled` (never the Anthropic-only `adaptive`); `output_config` is no longer sent; `max_tokens` is optional and omitted when not set, letting Mimo apply its per-model defaults; `cache_control` is dropped (Mimo's server-side cache works without client tags); `repetition_truncation` stop_reason maps to `FinishReason::Length`.
+
+### New features
+
+- **Claude Code reasoning round-trip** — when an assistant turn contains both thinking and tool_use blocks, the raw blocks (incl. `signature`) are now captured into `LlmEvent::AssistantState` / `Message::Assistant.provider_data` under the same `anthropic_content` envelope used by the Anthropic provider. On the next turn, `assistant_replay_message` re-emits them verbatim on stdin, preserving the model's chain-of-thought across `claude -p` invocations and avoiding redundant re-thinking.
+
+### Fixes
+
+- `Provider::ClaudeCode`: extended-thinking turns are no longer truncated before `tool_use` is emitted (root cause of agent loops terminating after one turn).
+- `Provider::ClaudeCode`: per-turn `completion_tokens` now reflects the final value from `message_delta`, not an early snapshot.
+- `Provider::Mimo`: removes invalid `thinking: {type: "adaptive"}` and `output_config` fields that the spec doesn't accept.
+
+### Public API
+
+No breaking changes to the Rust API. `Provider::Mimo` and `Request::mimo()` keep their signatures; only the wire body emitted to Mimo changes.
+
+### Tests
+
+- 11 new `raw::mimo` unit tests covering the spec-divergent fields.
+- New `tests/smoke_mimo.rs` (`#[ignore]`) live integration: complete / stream+thinking / multi-turn tool loop. Run with `MIMO_API_KEY=… MIMO_BASE_URL=… cargo test --test smoke_mimo -- --ignored`.
 
 ---
 
