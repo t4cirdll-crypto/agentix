@@ -90,7 +90,7 @@ agentix = { version = "0.24", features = ["server-openai-chat"] }
 # Includes an in-memory session store for previous_response_id chaining.
 agentix = { version = "0.24", features = ["server-openai-responses"] }
 
-# `agentix` CLI binary — proxy that speaks all three formats simultaneously
+# `aaagw` CLI binary — gateway that speaks all three formats simultaneously
 # (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses) on one
 # port, with a shared upstream fallback chain.
 agentix = { version = "0.24", features = ["cli"] }
@@ -105,9 +105,9 @@ flags bind to the most recent `-i`):
 
 ```bash
 # Use Claude Code OAuth as primary, DeepSeek paid API as fallback.
-agentix -i claude-code \
-        -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
-        --listen 127.0.0.1:7878
+aaagw -i claude-code \
+      -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
+      --listen 127.0.0.1:7878
 ```
 
 Then point any tool that speaks Anthropic Messages format at the proxy:
