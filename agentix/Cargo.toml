@@ -83,8 +83,8 @@ name = "12_server_anthropic"
 required-features = ["server-anthropic"]
 
 [[bin]]
-name = "agentix"
-path = "src/bin/agentix.rs"
+name = "aaagw"
+path = "src/bin/aaagw.rs"
 required-features = ["cli"]
 
 [dev-dependencies]

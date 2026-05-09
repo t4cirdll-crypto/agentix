@@ -1,13 +1,17 @@
-//! `agentix` CLI — Anthropic Messages-compatible HTTP proxy with fallback.
+//! `aaagw` — agentix multi-protocol LLM gateway.
+//!
+//! HTTP proxy that simultaneously speaks Anthropic Messages, OpenAI Chat
+//! Completions, and OpenAI Responses on a single port, fanning out to a
+//! shared fallback chain of upstream LLM providers.
 //!
 //! Each `-i <upstream>` flag opens a new upstream spec; trailing
 //! `--token / --model / --base-url` flags bind to the most recent `-i`.
 //! Repeated `-i` defines an ordered fallback chain.
 //!
 //! ```text
-//! agentix -i claude-code \
-//!         -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
-//!         --listen 127.0.0.1:7878
+//! aaagw -i claude-code \
+//!       -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
+//!       --listen 127.0.0.1:7878
 //! ```
 
 use std::process::ExitCode;
@@ -263,12 +267,12 @@ fn strip_trailing_chat_completions(url: &str) -> String {
 }
 
 const HELP: &str = "\
-agentix — Anthropic Messages-compatible HTTP proxy with fallback chain.
+aaagw — agentix multi-protocol LLM gateway with upstream fallback chain.
 
 USAGE:
-    agentix -i <upstream> [--token T] [--model M] [--base-url U]
-            [-i <upstream2> [--token T2] ...] ...
-            [--listen ADDR]
+    aaagw -i <upstream> [--token T] [--model M] [--base-url U]
+          [-i <upstream2> [--token T2] ...] ...
+          [--listen ADDR]
 
 UPSTREAMS:
     Each `-i <upstream>` opens a new upstream. Trailing per-upstream flags
@@ -299,14 +303,14 @@ OPTIONS:
 
 EXAMPLE:
     # Use Claude Code as primary, DeepSeek as fallback.
-    agentix \\
+    aaagw \\
         -i claude-code \\
         -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \\
         --listen 127.0.0.1:7878
 ";
 
 fn print_version() {
-    println!("agentix {}", env!("CARGO_PKG_VERSION"));
+    println!("aaagw {}", env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::main]
@@ -388,7 +392,7 @@ async fn main() -> ExitCode {
     let _ = chain; // chain may be otherwise unused when only one feature is on
     let _ = cli.stateless; // unused when server-openai-responses is off
 
-    tracing::info!(%local, "agentix proxy listening");
+    tracing::info!(%local, "aaagw gateway listening");
 
     let serve = axum::serve(listener, router).with_graceful_shutdown(async {
         let _ = tokio::signal::ctrl_c().await;
@@ -417,7 +421,7 @@ mod tests {
     use super::*;
 
     fn parse_args(args: &[&str]) -> Result<Cli, ParseError> {
-        let v: Vec<String> = std::iter::once("agentix")
+        let v: Vec<String> = std::iter::once("aaagw")
             .chain(args.iter().copied())
             .map(String::from)
             .collect();
