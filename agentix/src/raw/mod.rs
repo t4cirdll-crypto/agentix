@@ -10,6 +10,8 @@
 pub mod anthropic;
 #[cfg(feature = "claude-code")]
 pub mod claude_code;
+#[cfg(feature = "codex")]
+pub mod codex;
 pub mod deepseek;
 pub mod gemini;
 pub mod glm;

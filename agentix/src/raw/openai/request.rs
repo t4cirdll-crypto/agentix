@@ -289,6 +289,18 @@ pub(crate) fn build_responses_request(
     }
 }
 
+pub(crate) fn build_response_input_items(
+    config: &AgentConfig,
+    history: Vec<Message>,
+) -> Vec<Value> {
+    let req = build_responses_request(config, history, &[], None, false);
+    serde_json::to_value(req)
+        .ok()
+        .and_then(|v| v.get("input").cloned())
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+}
+
 /// Responses API rejects `include: ["reasoning.encrypted_content"]` on
 /// non-reasoning models (gpt-4o, gpt-4.1) with `"Encrypted content is not
 /// supported with this model"`. Include only when we know we're talking to

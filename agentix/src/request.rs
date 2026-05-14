@@ -314,6 +314,11 @@ pub enum Provider {
     #[cfg(feature = "claude-code")]
     #[serde(rename = "claude-code")]
     ClaudeCode,
+    /// Codex CLI via `codex app-server`.
+    /// The `api_key` field is ignored; auth comes from the local Codex CLI.
+    #[cfg(feature = "codex")]
+    #[serde(rename = "codex")]
+    Codex,
 }
 
 impl Provider {
@@ -332,6 +337,8 @@ impl Provider {
             Provider::OpenRouter => "https://openrouter.ai/api/v1",
             #[cfg(feature = "claude-code")]
             Provider::ClaudeCode => "",
+            #[cfg(feature = "codex")]
+            Provider::Codex => "",
         }
     }
 
@@ -350,6 +357,8 @@ impl Provider {
             Provider::OpenRouter => "openrouter/auto",
             #[cfg(feature = "claude-code")]
             Provider::ClaudeCode => "sonnet",
+            #[cfg(feature = "codex")]
+            Provider::Codex => "gpt-5.5",
         }
     }
 }
@@ -534,6 +543,14 @@ impl Request {
         Self::new(Provider::ClaudeCode, String::new())
     }
 
+    /// Shortcut for `Request::new(Provider::Codex, "")`.
+    ///
+    /// No API key is required; auth is delegated to the local `codex` CLI.
+    #[cfg(feature = "codex")]
+    pub fn codex() -> Self {
+        Self::new(Provider::Codex, String::new())
+    }
+
     // ── Builder setters (all consume & return Self) ──────────────────────
 
     /// Override the base URL.
@@ -580,6 +597,12 @@ impl Request {
     /// Set the tool definitions.
     pub fn tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Set how the model should select tools.
+    pub fn tool_choice(mut self, choice: ToolChoice) -> Self {
+        self.tool_choice = Some(choice);
         self
     }
 
@@ -740,6 +763,18 @@ impl Request {
                 )
                 .await
             }
+            #[cfg(feature = "codex")]
+            Provider::Codex => {
+                crate::raw::codex::stream_codex(
+                    &self.api_key,
+                    http,
+                    &config,
+                    messages,
+                    tools,
+                    self.tool_choice.as_ref(),
+                )
+                .await
+            }
         }
     }
 
@@ -818,6 +853,18 @@ impl Request {
                     &config,
                     messages,
                     tools,
+                )
+                .await
+            }
+            #[cfg(feature = "codex")]
+            Provider::Codex => {
+                crate::raw::codex::complete_codex(
+                    &self.api_key,
+                    http,
+                    &config,
+                    messages,
+                    tools,
+                    self.tool_choice.as_ref(),
                 )
                 .await
             }

@@ -1,8 +1,8 @@
 [package]
 name = "agentix"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
-description = "Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, MCP, DeepSeek, OpenAI, Anthropic, Gemini, Mimo"
+description = "Multi-provider LLM client for Rust — streaming, non-streaming, tool calls, MCP, DeepSeek, OpenAI, Anthropic, Gemini, Codex"
 authors = ["ozongzi <ozongzi@icloud.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ozongzi/agentix"
@@ -30,6 +30,7 @@ claude-code = [
     "mcp-server",
     "dep:uuid",
 ]
+codex = []
 server-anthropic = ["dep:axum"]
 server-openai-chat = ["dep:axum"]
 server-openai-responses = ["dep:axum"]
@@ -38,6 +39,7 @@ cli = [
     "server-openai-chat",
     "server-openai-responses",
     "claude-code",
+    "codex",
     "dep:tracing-subscriber",
 ]
 
@@ -81,6 +83,10 @@ required-features = ["claude-code"]
 [[example]]
 name = "12_server_anthropic"
 required-features = ["server-anthropic"]
+
+[[example]]
+name = "13_codex_agent_multiturn"
+required-features = ["codex"]
 
 [[bin]]
 name = "aaagw"

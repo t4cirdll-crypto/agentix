@@ -8,8 +8,8 @@ Multi-provider LLM client for Rust: streaming, non-streaming, tool calls,
 agent loops, MCP tools, structured output, multimodal input, and reasoning
 state round-trip.
 
-DeepSeek, OpenAI, Anthropic, Gemini, Kimi, GLM, MiniMax, Mimo, Grok, and
-OpenRouter all use the same `Request` API.
+DeepSeek, OpenAI, Anthropic, Gemini, Kimi, GLM, MiniMax, Mimo, Grok,
+OpenRouter, Claude Code, and Codex all use the same `Request` API.
 
 ---
 
@@ -60,43 +60,46 @@ println!("{}", response.content.unwrap_or_default());
 
 ```toml
 [dependencies]
-agentix = "0.24"
+agentix = "0.26"
 ```
 
 Optional features:
 
 ```toml
 # MCP client tools
-agentix = { version = "0.24", features = ["mcp"] }
+agentix = { version = "0.26", features = ["mcp"] }
 
 # Expose local tools as an MCP server
-agentix = { version = "0.24", features = ["mcp-server"] }
+agentix = { version = "0.26", features = ["mcp-server"] }
 
 # Use the local `claude -p` CLI as Provider::ClaudeCode
-agentix = { version = "0.24", features = ["claude-code"] }
+agentix = { version = "0.26", features = ["claude-code"] }
+
+# Use the local `codex` CLI as Provider::Codex
+agentix = { version = "0.26", features = ["codex"] }
 
 # Anthropic Messages-compatible HTTP server (POST /v1/messages, streaming SSE
 # + non-streaming, fallback chain across upstreams). Library API is
 # `agentix::server::AnthropicServer`.
-agentix = { version = "0.24", features = ["server-anthropic"] }
+agentix = { version = "0.26", features = ["server-anthropic"] }
 
 # OpenAI Chat Completions-compatible HTTP server (POST /v1/chat/completions,
 # GET /v1/models). Library API is `agentix::server::OpenAIChatServer`.
 # Can be combined with server-anthropic on the same bind port.
-agentix = { version = "0.24", features = ["server-openai-chat"] }
+agentix = { version = "0.26", features = ["server-openai-chat"] }
 
 # OpenAI Responses API-compatible HTTP server (POST /v1/responses). Required
 # for Codex CLI and other clients that have deprecated Chat Completions.
 # Includes an in-memory session store for previous_response_id chaining.
-agentix = { version = "0.24", features = ["server-openai-responses"] }
+agentix = { version = "0.26", features = ["server-openai-responses"] }
 
 # `aaagw` CLI binary — gateway that speaks all three formats simultaneously
 # (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses) on one
 # port, with a shared upstream fallback chain.
-agentix = { version = "0.24", features = ["cli"] }
+agentix = { version = "0.26", features = ["cli"] }
 
 # Compile-time gate for full request/response body logging
-agentix = { version = "0.24", features = ["sensitive-logs"] }
+agentix = { version = "0.26", features = ["sensitive-logs"] }
 ```
 
 The CLI binary takes one or more `-i <upstream>` flags (each opens a new
@@ -173,7 +176,7 @@ quickly; the agentix column tracks this repository's current behavior.
 | Multimodal input | Text, images, documents where provider supports them | Provider-dependent | Provider-dependent | Provider-dependent via model integrations |
 | Structured output | JSON object + JSON Schema where provider supports it | Supported patterns vary by provider | Provider-dependent | Via model/tool integrations |
 | Reasoning controls | Cross-provider `ReasoningEffort` | Provider-specific | Provider-specific | Provider/model-specific |
-| Provider support | 10 HTTP providers + optional Claude Code CLI | Multiple native provider integrations | Older/smaller provider surface | Broad via LangChain ecosystem |
+| Provider support | 10 HTTP providers + optional Claude Code/Codex CLI providers | Multiple native provider integrations | Older/smaller provider surface | Broad via LangChain ecosystem |
 | MCP client tools | Optional `mcp` feature | Not core | Not core | Via integrations / custom nodes |
 | MCP server | Optional `mcp-server` feature | Not core | Not core | Via integrations / deployment stack |
 
@@ -186,8 +189,8 @@ streams, so complex workflows can be built with ordinary `async`, `Stream`, and
 
 ## Providers
 
-Ten HTTP providers are built in. `Provider::ClaudeCode` is also available behind
-the `claude-code` feature.
+Ten HTTP providers are built in. `Provider::ClaudeCode` and `Provider::Codex`
+are also available behind the `claude-code` and `codex` features.
 
 | Provider | Constructor | Default model | Default base URL | Wire format |
 |---|---|---|---|---|
@@ -201,6 +204,8 @@ the `claude-code` feature.
 | Mimo | `Request::mimo(key)` | `mimo-v2.5-pro` | `https://api.xiaomimimo.com/anthropic` | Anthropic-compatible |
 | Grok | `Request::grok(key)` | `grok-4` | `https://api.x.ai/v1` | Chat Completions-compatible |
 | OpenRouter | `Request::openrouter(key)` | `openrouter/auto` | `https://openrouter.ai/api/v1` | Chat Completions-compatible |
+| Claude Code | `Request::claude_code()` | `sonnet` | n/a | local `claude -p` CLI |
+| Codex | `Request::codex()` | `gpt-5.5` | n/a | local `codex app-server` |
 
 ```rust
 use agentix::{Provider, Request};
@@ -515,6 +520,9 @@ let review: Review = response.json()?;
 Provider behavior:
 
 - OpenAI Responses supports text, JSON object, and JSON Schema.
+- Codex supports text and strict JSON Schema through app-server
+  `outputSchema`; JSON object mode and `strict=false` schemas are rejected
+  instead of being silently downgraded.
 - Gemini supports JSON object and JSON Schema through generation config.
 - DeepSeek degrades JSON Schema to JSON object with a warning.
 - Grok, GLM, Kimi, and OpenRouter pass compatible `response_format` fields.
@@ -532,7 +540,7 @@ With the `claude-code` feature, `Provider::ClaudeCode` runs the local
 from the Claude CLI OAuth session.
 
 ```toml
-agentix = { version = "0.24", features = ["claude-code"] }
+agentix = { version = "0.26", features = ["claude-code"] }
 ```
 
 ```rust
@@ -571,6 +579,77 @@ See [examples/10_claude_code.rs](agentix/examples/10_claude_code.rs).
 
 ---
 
+## Codex
+
+With the `codex` feature, `Provider::Codex` runs the local `codex app-server`
+protocol and lets agentix keep control of the tool loop. Auth comes from the
+local Codex CLI session; no API key is required.
+
+Codex is used as an LLM provider only. agentix does not expose Codex native
+tools or sandbox environments. Function tools are supplied through Codex
+`dynamicTools`; when Codex requests a tool, agentix interrupts the turn,
+executes the Rust tool locally, then starts a fresh Codex app-server process and
+reconstructs the session through `thread/inject_items`.
+
+```toml
+agentix = { version = "0.26", features = ["codex"] }
+```
+
+```rust
+use agentix::{AgentEvent, Content, Message, Request, agent, tool};
+use futures::StreamExt;
+
+struct Calculator;
+
+#[tool]
+impl agentix::Tool for Calculator {
+    /// Add two numbers.
+    /// a: first number
+    /// b: second number
+    async fn add(&self, a: f64, b: f64) -> f64 {
+        a + b
+    }
+}
+
+let http = reqwest::Client::new();
+let request = Request::codex()
+    .model("gpt-5.5")
+    .system_prompt("Use tools for arithmetic.");
+let history = vec![Message::User(vec![Content::text("What is 123 + 456?")])];
+
+let mut stream = agent(Calculator, http, request, history, None);
+while let Some(event) = stream.next().await {
+    match event {
+        AgentEvent::Token(t) => print!("{t}"),
+        AgentEvent::Done(usage) => eprintln!("tokens: {}", usage.total_tokens),
+        _ => {}
+    }
+}
+```
+
+Supported Codex mappings:
+
+- Streaming text via app-server `item/agentMessage/delta`.
+- Images in user input through app-server `UserInput::image`.
+- Dynamic function tools through app-server `dynamicTools`.
+- Opaque OpenAI Responses items, including encrypted reasoning/provider state,
+  round-tripped through `Message::Assistant.provider_data`.
+- `ReasoningEffort` mapped to Codex turn `effort`.
+- Strict JSON Schema mapped to Codex turn `outputSchema`.
+
+Unsupported Codex mappings fail fast:
+
+- `temperature`, `max_tokens`, and `extra_body`.
+- JSON object response mode.
+- JSON Schema with `strict=false`.
+- Forced tool choice (`required` or a named tool). `auto` and `none` are
+  supported.
+- Document/PDF input and non-text tool results.
+
+See [examples/13_codex_agent_multiturn.rs](agentix/examples/13_codex_agent_multiturn.rs).
+
+---
+
 ## Sensitive Logging
 
 Full request bodies, response bodies, streaming chunks, and MCP raw request
@@ -598,6 +677,8 @@ If either gate is missing, full bodies are not logged.
 - [09_deep_research.rs](agentix/examples/09_deep_research.rs): multi-step research flow
 - [10_claude_code.rs](agentix/examples/10_claude_code.rs): Claude Code provider
 - [11_reasoning.rs](agentix/examples/11_reasoning.rs): reasoning effort comparison
+- [12_server_anthropic.rs](agentix/examples/12_server_anthropic.rs): Anthropic-compatible server
+- [13_codex_agent_multiturn.rs](agentix/examples/13_codex_agent_multiturn.rs): Codex provider multi-turn agent loop
 
 ---
 
