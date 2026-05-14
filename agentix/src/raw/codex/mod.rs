@@ -285,7 +285,7 @@ async fn start_thread<R: AsyncBufRead + Unpin>(
         .map_err(|e| ApiError::Other(format!("current_dir: {e}")))?
         .to_string_lossy()
         .into_owned();
-    let mut params = json!({
+    let params = json!({
         "cwd": cwd,
         "model": config.model,
         "modelProvider": "openai",
@@ -295,10 +295,22 @@ async fn start_thread<R: AsyncBufRead + Unpin>(
         "environments": [],
         "experimentalRawEvents": true,
         "dynamicTools": dynamic_tools(tools, tool_choice)?,
+        "baseInstructions": config.system_prompt.clone().unwrap_or_default(),
+        "config": {
+            "include_permissions_instructions": false,
+            "include_apps_instructions": false,
+            "include_collaboration_mode_instructions": false,
+            "include_environment_context": false,
+            "project_doc_max_bytes": 0,
+            "skills": {
+                "include_instructions": false,
+                "bundled": { "enabled": false }
+            },
+            "tools": {
+                "webSearch": false
+            }
+        },
     });
-    if let Some(system) = config.system_prompt.as_ref().filter(|s| !s.is_empty()) {
-        params["developerInstructions"] = Value::String(system.clone());
-    }
     let result = request(stdin, lines, 2, "thread/start", params).await?;
     result
         .pointer("/thread/id")
