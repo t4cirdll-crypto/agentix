@@ -592,10 +592,7 @@ impl ResponsesStreamState {
                 self.close_current(out);
                 let mut envelope = self.envelope_skeleton("failed");
                 if let Value::Object(map) = &mut envelope {
-                    map.insert(
-                        "incomplete_details".into(),
-                        json!({"reason": "error"}),
-                    );
+                    map.insert("incomplete_details".into(), json!({"reason": "error"}));
                 }
                 let seq = self.next_seq();
                 out.push((
@@ -736,7 +733,10 @@ mod tests {
     use crate::request::ToolCall;
     use crate::types::ToolCallChunk;
 
-    fn collect(state: &mut ResponsesStreamState, events: Vec<LlmEvent>) -> Vec<(&'static str, Value)> {
+    fn collect(
+        state: &mut ResponsesStreamState,
+        events: Vec<LlmEvent>,
+    ) -> Vec<(&'static str, Value)> {
         let mut out = Vec::new();
         for ev in events {
             out.extend(state.on_event(ev));
@@ -745,13 +745,7 @@ mod tests {
     }
 
     fn fresh_state() -> ResponsesStreamState {
-        ResponsesStreamState::new(
-            "resp_test".into(),
-            "gpt-mock".into(),
-            None,
-            None,
-            None,
-        )
+        ResponsesStreamState::new("resp_test".into(), "gpt-mock".into(), None, None, None)
     }
 
     #[test]
@@ -771,10 +765,10 @@ mod tests {
             vec![
                 "response.created",
                 "response.in_progress",
-                "response.output_item.added",   // message
+                "response.output_item.added", // message
                 "response.content_part.added",
-                "response.output_text.delta",   // "Hi"
-                "response.output_text.delta",   // " there"
+                "response.output_text.delta", // "Hi"
+                "response.output_text.delta", // " there"
                 "response.output_text.done",
                 "response.content_part.done",
                 "response.output_item.done",
@@ -874,7 +868,11 @@ mod tests {
         let names: Vec<&str> = frames.iter().map(|(n, _)| *n).collect();
         assert_eq!(
             names,
-            vec!["response.created", "response.in_progress", "response.completed"]
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.completed"
+            ]
         );
         let response = frames.last().unwrap().1["response"].clone();
         let output = response["output"].as_array().unwrap();

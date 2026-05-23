@@ -201,7 +201,12 @@ impl SseState {
         }
     }
 
-    fn open(&mut self, kind: BlockKind, start_payload: Value, out: &mut Vec<(&'static str, Value)>) {
+    fn open(
+        &mut self,
+        kind: BlockKind,
+        start_payload: Value,
+        out: &mut Vec<(&'static str, Value)>,
+    ) {
         let idx = self.next_index;
         self.next_index += 1;
         out.push((
@@ -225,11 +230,7 @@ impl SseState {
                 self.ensure_message_start(out);
                 self.flush_pending_close(out);
                 if !self.close_current_unless(&BlockKind::Text, out) {
-                    self.open(
-                        BlockKind::Text,
-                        json!({"type": "text", "text": ""}),
-                        out,
-                    );
+                    self.open(BlockKind::Text, json!({"type": "text", "text": ""}), out);
                 }
                 let idx = self.current_index().unwrap();
                 out.push((
@@ -373,11 +374,12 @@ impl SseState {
                         json!({"type": "content_block_stop", "index": idx}),
                     ));
                 }
-                let stop_reason = if self.has_tool_use { "tool_use" } else { "end_turn" };
-                let usage = self
-                    .last_usage
-                    .clone()
-                    .unwrap_or_default();
+                let stop_reason = if self.has_tool_use {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                };
+                let usage = self.last_usage.clone().unwrap_or_default();
                 out.push((
                     "message_delta",
                     json!({
@@ -386,10 +388,7 @@ impl SseState {
                         "usage": usage_to_json(&usage),
                     }),
                 ));
-                out.push((
-                    "message_stop",
-                    json!({"type": "message_stop"}),
-                ));
+                out.push(("message_stop", json!({"type": "message_stop"})));
             }
 
             LlmEvent::Error(e) => {
@@ -538,7 +537,10 @@ mod tests {
         let mut s = SseState::new("m".into());
         let frames = collect(&mut s, vec![LlmEvent::Done]);
         let names: Vec<&str> = frames.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, vec!["message_start", "message_delta", "message_stop"]);
+        assert_eq!(
+            names,
+            vec!["message_start", "message_delta", "message_stop"]
+        );
     }
 
     #[test]

@@ -133,7 +133,11 @@ mod tests {
     fn resolve_walks_parent_chain_in_chronological_order() {
         let store = SessionStore::default();
         store.put("r1".into(), vec![json!({"id": "first"})], None);
-        store.put("r2".into(), vec![json!({"id": "second"})], Some("r1".into()));
+        store.put(
+            "r2".into(),
+            vec![json!({"id": "second"})],
+            Some("r1".into()),
+        );
         store.put("r3".into(), vec![json!({"id": "third"})], Some("r2".into()));
         let items = store.resolve("r3").unwrap();
         assert_eq!(items.len(), 3);

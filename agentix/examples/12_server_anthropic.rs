@@ -17,8 +17,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "set ANTHROPIC_API_KEY to run this example")?;
 
     let chain = vec![UpstreamSpec::new(Provider::Anthropic, key)];
-    AnthropicServer::new(chain)
-        .listen("127.0.0.1:7878")
-        .await?;
+    AnthropicServer::new(chain).listen("127.0.0.1:7878").await?;
     Ok(())
 }

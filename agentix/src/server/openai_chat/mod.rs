@@ -102,12 +102,8 @@ async fn handle_chat_completions(
             }
         }
     } else {
-        match fallback::complete_with_fallback(
-            &server.inner.chain,
-            &translated,
-            &server.inner.http,
-        )
-        .await
+        match fallback::complete_with_fallback(&server.inner.chain, &translated, &server.inner.http)
+            .await
         {
             Ok(resp) => {
                 let body = outbound::build_response_body(resp, &request_model);
@@ -154,7 +150,10 @@ fn sse_events(
                         v => v.to_string(),
                     };
                     let event = Event::default().data(body);
-                    return Some((Ok::<_, Infallible>(event), (state, stream, buffered, finished)));
+                    return Some((
+                        Ok::<_, Infallible>(event),
+                        (state, stream, buffered, finished),
+                    ));
                 }
                 if finished {
                     return None;

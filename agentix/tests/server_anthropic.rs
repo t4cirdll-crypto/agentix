@@ -227,8 +227,14 @@ async fn streaming_text_round_trip() {
     let text = std::str::from_utf8(&bytes).unwrap();
 
     // Sanity-check the SSE shape: must contain message_start, text deltas, message_stop.
-    assert!(text.contains("event: message_start"), "missing message_start: {text}");
-    assert!(text.contains("event: content_block_start"), "missing content_block_start: {text}");
+    assert!(
+        text.contains("event: message_start"),
+        "missing message_start: {text}"
+    );
+    assert!(
+        text.contains("event: content_block_start"),
+        "missing content_block_start: {text}"
+    );
     assert!(text.contains("event: content_block_delta"));
     assert!(text.contains("\"text\":\"hi\""));
     assert!(text.contains("event: content_block_stop"));
@@ -255,8 +261,10 @@ async fn fallback_to_secondary_when_primary_5xx_non_streaming() {
     let (secondary_addr, _h2) = spawn_mock_upstream(secondary_mock.clone()).await;
 
     let chain = vec![
-        UpstreamSpec::new(Provider::Anthropic, "k1").with_base_url(format!("http://{primary_addr}")),
-        UpstreamSpec::new(Provider::Anthropic, "k2").with_base_url(format!("http://{secondary_addr}")),
+        UpstreamSpec::new(Provider::Anthropic, "k1")
+            .with_base_url(format!("http://{primary_addr}")),
+        UpstreamSpec::new(Provider::Anthropic, "k2")
+            .with_base_url(format!("http://{secondary_addr}")),
     ];
     let (proxy_addr, _h3) = spawn_proxy(chain).await;
 

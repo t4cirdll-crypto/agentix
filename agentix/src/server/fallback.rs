@@ -58,7 +58,10 @@ impl UpstreamSpec {
 /// payload.
 fn build_request(spec: &UpstreamSpec, t: &Translated) -> Request {
     let mut req = Request::new(spec.provider, spec.api_key.clone());
-    let model = spec.model.clone().unwrap_or_else(|| t.model_from_client.clone());
+    let model = spec
+        .model
+        .clone()
+        .unwrap_or_else(|| t.model_from_client.clone());
     req = req.model(model).max_tokens(t.max_tokens);
     if let Some(url) = &spec.base_url {
         req = req.base_url(url.clone());

@@ -38,8 +38,8 @@ use serde_json::{Value, json};
 use tokio::net::ToSocketAddrs;
 use tracing::{error, info};
 
-pub use error::{ErrorKind, ServerError};
 pub use crate::server::fallback::UpstreamSpec;
+pub use error::{ErrorKind, ServerError};
 
 const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
 
@@ -130,12 +130,8 @@ async fn handle_messages(
             }
         }
     } else {
-        match fallback::complete_with_fallback(
-            &server.inner.chain,
-            &translated,
-            &server.inner.http,
-        )
-        .await
+        match fallback::complete_with_fallback(&server.inner.chain, &translated, &server.inner.http)
+            .await
         {
             Ok(resp) => {
                 let has_reasoning = translated.reasoning_effort.is_some()
@@ -164,14 +160,20 @@ fn sse_events(
     llm_stream: BoxStream<'static, crate::msg::LlmEvent>,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     stream::unfold(
-        (state, llm_stream, std::collections::VecDeque::<(&'static str, Value)>::new(), false),
+        (
+            state,
+            llm_stream,
+            std::collections::VecDeque::<(&'static str, Value)>::new(),
+            false,
+        ),
         |(mut state, mut stream, mut buffered, mut finished)| async move {
             loop {
                 if let Some((name, payload)) = buffered.pop_front() {
-                    let event = Event::default()
-                        .event(name)
-                        .data(payload.to_string());
-                    return Some((Ok::<_, Infallible>(event), (state, stream, buffered, finished)));
+                    let event = Event::default().event(name).data(payload.to_string());
+                    return Some((
+                        Ok::<_, Infallible>(event),
+                        (state, stream, buffered, finished),
+                    ));
                 }
                 if finished {
                     return None;

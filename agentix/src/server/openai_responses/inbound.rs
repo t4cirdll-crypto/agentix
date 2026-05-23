@@ -178,9 +178,7 @@ fn items_to_messages(items: &[Value]) -> Result<Vec<Message>, OpenAIError> {
                                 .iter()
                                 .filter_map(|p| match p {
                                     MessageContentPart::OutputText { text }
-                                    | MessageContentPart::InputText { text } => {
-                                        Some(text.as_str())
-                                    }
+                                    | MessageContentPart::InputText { text } => Some(text.as_str()),
                                     _ => None,
                                 })
                                 .collect::<Vec<_>>()
@@ -293,7 +291,8 @@ fn parts_from_content(c: MessageContent) -> Vec<UserContent> {
             }
             MessageContentPart::InputImage { image_url, .. } => {
                 if let Some(url) = image_url {
-                    let (data, mime) = parse_data_url_or_url(&url, ImageData::Url, ImageData::Base64);
+                    let (data, mime) =
+                        parse_data_url_or_url(&url, ImageData::Url, ImageData::Base64);
                     out.push(UserContent::Image(ImageContent {
                         data,
                         mime_type: mime,
@@ -306,7 +305,8 @@ fn parts_from_content(c: MessageContent) -> Vec<UserContent> {
                 filename,
             } => {
                 let doc = if let Some(data) = file_data {
-                    let (d, mime) = parse_data_url_or_url(&data, DocumentData::Url, DocumentData::Base64);
+                    let (d, mime) =
+                        parse_data_url_or_url(&data, DocumentData::Url, DocumentData::Base64);
                     DocumentContent {
                         data: d,
                         mime_type: mime,
@@ -463,12 +463,25 @@ mod tests {
             ],
         }));
         // Assistant message captures both reasoning + function_call as raw items.
-        let asst = p.translated.messages.iter().find_map(|m| match m {
-            Message::Assistant { provider_data, tool_calls, .. } => Some((provider_data.clone(), tool_calls.clone())),
-            _ => None,
-        }).unwrap();
+        let asst = p
+            .translated
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant {
+                    provider_data,
+                    tool_calls,
+                    ..
+                } => Some((provider_data.clone(), tool_calls.clone())),
+                _ => None,
+            })
+            .unwrap();
         let pd = asst.0.unwrap();
-        let items = pd.get("openai_responses_items").unwrap().as_array().unwrap();
+        let items = pd
+            .get("openai_responses_items")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["type"], "reasoning");
         assert_eq!(items[0]["encrypted_content"], "ENC");
@@ -488,7 +501,8 @@ mod tests {
             "model": "gpt-5",
             "previous_response_id": "r1",
             "input": "second",
-        })).unwrap();
+        }))
+        .unwrap();
         let p = translate(req, &ctx).unwrap();
         assert_eq!(p.parent_id.as_deref(), Some("r1"));
         // Two user messages: "first" (resolved) + "second" (new input).
@@ -507,7 +521,8 @@ mod tests {
             "model": "gpt-5",
             "previous_response_id": "missing",
             "input": "hi",
-        })).unwrap();
+        }))
+        .unwrap();
         let err = translate(req, &ctx()).unwrap_err();
         assert_eq!(err.kind, super::super::error::ErrorKind::InvalidRequest);
     }
@@ -534,7 +549,8 @@ mod tests {
             "model": "gpt-5",
             "input": "hi",
             "tools": [{"type": "web_search"}],
-        })).unwrap();
+        }))
+        .unwrap();
         let err = translate(req, &ctx()).unwrap_err();
         assert_eq!(err.kind, super::super::error::ErrorKind::InvalidRequest);
     }

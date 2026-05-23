@@ -317,15 +317,13 @@ fn translate_reasoning(
 ) -> Option<ReasoningEffort> {
     match (thinking, output_config) {
         (Some(wire::ThinkingConfig::Disabled), _) => Some(ReasoningEffort::None),
-        (Some(wire::ThinkingConfig::Adaptive), Some(cfg)) => {
-            Some(match cfg.effort {
-                wire::AnthropicEffort::Low => ReasoningEffort::Low,
-                wire::AnthropicEffort::Medium => ReasoningEffort::Medium,
-                wire::AnthropicEffort::High => ReasoningEffort::High,
-                wire::AnthropicEffort::XHigh => ReasoningEffort::XHigh,
-                wire::AnthropicEffort::Max => ReasoningEffort::Max,
-            })
-        }
+        (Some(wire::ThinkingConfig::Adaptive), Some(cfg)) => Some(match cfg.effort {
+            wire::AnthropicEffort::Low => ReasoningEffort::Low,
+            wire::AnthropicEffort::Medium => ReasoningEffort::Medium,
+            wire::AnthropicEffort::High => ReasoningEffort::High,
+            wire::AnthropicEffort::XHigh => ReasoningEffort::XHigh,
+            wire::AnthropicEffort::Max => ReasoningEffort::Max,
+        }),
         (Some(wire::ThinkingConfig::Adaptive), None) => Some(ReasoningEffort::Medium),
         (None, Some(cfg)) => Some(match cfg.effort {
             wire::AnthropicEffort::Low => ReasoningEffort::Low,
@@ -399,11 +397,20 @@ mod tests {
             ]
         }));
         assert_eq!(t.messages.len(), 2);
-        if let Message::Assistant { provider_data, tool_calls, reasoning, .. } = &t.messages[1] {
+        if let Message::Assistant {
+            provider_data,
+            tool_calls,
+            reasoning,
+            ..
+        } = &t.messages[1]
+        {
             assert_eq!(reasoning.as_deref(), Some("plan..."));
             assert_eq!(tool_calls.len(), 1);
             let pd = provider_data.as_ref().expect("provider_data must be set");
-            let arr = pd.get("anthropic_content").and_then(|v| v.as_array()).unwrap();
+            let arr = pd
+                .get("anthropic_content")
+                .and_then(|v| v.as_array())
+                .unwrap();
             assert_eq!(arr.len(), 2);
             assert_eq!(arr[0]["signature"], "sig-A");
         } else {

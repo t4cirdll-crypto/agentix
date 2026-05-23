@@ -110,7 +110,7 @@ flags bind to the most recent `-i`):
 # Use Claude Code OAuth as primary, DeepSeek paid API as fallback.
 aaagw -i claude-code \
       -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
-      --listen 127.0.0.1:7878
+      127.0.0.1:7878
 ```
 
 Then point any tool that speaks Anthropic Messages format at the proxy:

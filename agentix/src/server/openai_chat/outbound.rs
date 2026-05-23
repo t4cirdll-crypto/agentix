@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 use crate::msg::LlmEvent;
 use crate::types::{CompleteResponse, FinishReason, UsageStats};
 
-use super::wire::{self, ChatCompletionChunk, ChunkChoice, Delta, DeltaFunctionCall, DeltaToolCall};
+use super::wire::{
+    self, ChatCompletionChunk, ChunkChoice, Delta, DeltaFunctionCall, DeltaToolCall,
+};
 
 // ── Non-streaming response builder ───────────────────────────────────────────
 
@@ -60,7 +62,11 @@ fn stop_reason_str(fr: &FinishReason, has_tool_calls: bool) -> &'static str {
         FinishReason::Length => "length",
         FinishReason::ContentFilter => "content_filter",
         FinishReason::Stop | FinishReason::Other(_) => {
-            if has_tool_calls { "tool_calls" } else { "stop" }
+            if has_tool_calls {
+                "tool_calls"
+            } else {
+                "stop"
+            }
         }
     }
 }
@@ -206,11 +212,8 @@ impl ChunkState {
             LlmEvent::ToolCallChunk(chunk) => {
                 self.ensure_role(out);
                 let (slot, is_first) = self.slot_for(&chunk.id);
-                let send_skeleton = is_first
-                    || !*self
-                        .tool_skeleton_emitted
-                        .get(&slot)
-                        .unwrap_or(&false);
+                let send_skeleton =
+                    is_first || !*self.tool_skeleton_emitted.get(&slot).unwrap_or(&false);
                 let delta_tc = if send_skeleton {
                     self.tool_skeleton_emitted.insert(slot, true);
                     DeltaToolCall {
@@ -291,7 +294,11 @@ impl ChunkState {
 
             LlmEvent::Done => {
                 self.ensure_role(out);
-                let stop = if self.has_tool_calls { "tool_calls" } else { "stop" };
+                let stop = if self.has_tool_calls {
+                    "tool_calls"
+                } else {
+                    "stop"
+                };
                 let final_chunk = self.skeleton(Delta::default(), Some(stop));
                 push_chunk(out, &final_chunk);
 

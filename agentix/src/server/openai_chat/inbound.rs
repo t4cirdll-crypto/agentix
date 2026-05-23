@@ -116,7 +116,10 @@ pub fn translate(incoming: wire::ChatCompletionsRequest) -> Result<Translated, O
         })
         .collect();
 
-    let tool_choice = incoming.tool_choice.map(translate_tool_choice).transpose()?;
+    let tool_choice = incoming
+        .tool_choice
+        .map(translate_tool_choice)
+        .transpose()?;
 
     let max_tokens = incoming
         .max_completion_tokens
@@ -295,12 +298,19 @@ mod tests {
                 }
             ]
         }));
-        let asst = t.messages.iter().find_map(|m| match m {
-            Message::Assistant { content, reasoning, tool_calls, .. } => {
-                Some((content.clone(), reasoning.clone(), tool_calls.clone()))
-            }
-            _ => None,
-        }).unwrap();
+        let asst = t
+            .messages
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant {
+                    content,
+                    reasoning,
+                    tool_calls,
+                    ..
+                } => Some((content.clone(), reasoning.clone(), tool_calls.clone())),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(asst.0, None);
         assert_eq!(asst.1.as_deref(), Some("let me think"));
         assert_eq!(asst.2.len(), 1);

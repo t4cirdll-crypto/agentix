@@ -11,7 +11,7 @@
 //! ```text
 //! aaagw -i claude-code \
 //!       -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \
-//!       --listen 127.0.0.1:7878
+//!       127.0.0.1:7878
 //! ```
 
 use std::process::ExitCode;
@@ -69,8 +69,8 @@ impl std::fmt::Display for ParseError {
 
 /// Walk argv. Each `-i <value>` opens a new draft. Trailing
 /// `--token | --model | --base-url` (with `=value` or next-arg form) binds to
-/// the most recent draft. `--listen | -l` is global. `-h | --help`,
-/// `-V | --version` are recognized.
+/// the most recent draft. One optional positional argument sets the bind
+/// address. `-h | --help`, `-V | --version` are recognized.
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
     let mut iter = args.into_iter();
     // Skip argv[0] when present.
@@ -111,15 +111,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
             continue;
         }
 
-        if let Some(value) = strip_eq(&arg, &["-l", "--listen"]) {
-            cli.listen = Some(value);
-            continue;
-        }
-        if matches!(arg.as_str(), "-l" | "--listen") {
-            cli.listen = Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
-            continue;
-        }
-
         // Per-upstream trailing flags.
         let bind_to_last = |cli: &mut Cli, flag: &str, value: String| {
             let last = cli
@@ -136,7 +127,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         };
 
         if let Some((flag, value)) = split_eq(&arg)
-            && matches!(flag, "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u")
+            && matches!(
+                flag,
+                "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u"
+            )
         {
             bind_to_last(&mut cli, flag, value)?;
             continue;
@@ -148,6 +142,14 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         ) {
             let value = next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?;
             bind_to_last(&mut cli, &arg, value)?;
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            return Err(ParseError::UnknownFlag(arg));
+        }
+        if cli.listen.is_none() {
+            cli.listen = Some(arg);
             continue;
         }
 
@@ -276,7 +278,7 @@ aaagw — agentix multi-protocol LLM gateway with upstream fallback chain.
 USAGE:
     aaagw -i <upstream> [--token T] [--model M] [--base-url U]
           [-i <upstream2> [--token T2] ...] ...
-          [--listen ADDR]
+          [ADDR]
 
 UPSTREAMS:
     Each `-i <upstream>` opens a new upstream. Trailing per-upstream flags
@@ -297,7 +299,6 @@ OPTIONS:
                                   (falls back to <PROVIDER>_API_KEY env var)
     -m, --model <MODEL>          Override the client's model field upstream
     -u, --base-url <URL>         Override the upstream's base URL
-    -l, --listen <ADDR>          Bind address (default: 127.0.0.1:7878)
         --stateless              Disable the Responses API session store —
                                   every request must carry full input each
                                   turn; previous_response_id is rejected.
@@ -310,7 +311,7 @@ EXAMPLE:
     aaagw \\
         -i claude-code \\
         -i https://api.deepseek.com/chat/completions --token $DEEPSEEK_API_KEY \\
-        --listen 127.0.0.1:7878
+        127.0.0.1:7878
 ";
 
 fn print_version() {
@@ -389,7 +390,11 @@ async fn main() -> ExitCode {
     {
         use agentix::server::OpenAIResponsesServer;
         let resp = OpenAIResponsesServer::new(chain.clone());
-        let resp = if cli.stateless { resp.stateless() } else { resp };
+        let resp = if cli.stateless {
+            resp.stateless()
+        } else {
+            resp
+        };
         router = router.merge(resp.router());
     }
 
@@ -412,8 +417,8 @@ async fn main() -> ExitCode {
 #[cfg(feature = "cli")]
 fn init_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,agentix=info"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,agentix=info"));
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
@@ -441,14 +446,16 @@ mod tests {
             "https://api.deepseek.com/chat/completions",
             "--token",
             "sk-x",
-            "--listen",
             "127.0.0.1:7878",
         ])
         .unwrap();
         assert_eq!(cli.upstreams.len(), 2);
         assert_eq!(cli.upstreams[0].target, "claude-code");
         assert!(cli.upstreams[0].token.is_none());
-        assert_eq!(cli.upstreams[1].target, "https://api.deepseek.com/chat/completions");
+        assert_eq!(
+            cli.upstreams[1].target,
+            "https://api.deepseek.com/chat/completions"
+        );
         assert_eq!(cli.upstreams[1].token.as_deref(), Some("sk-x"));
         assert_eq!(cli.listen.as_deref(), Some("127.0.0.1:7878"));
     }
@@ -484,12 +491,23 @@ mod tests {
     }
 
     #[test]
-    fn listen_position_independent() {
-        let cli =
-            parse_args(&["--listen", "0.0.0.0:9999", "-i", "deepseek", "--token", "x"]).unwrap();
+    fn positional_listen() {
+        let cli = parse_args(&["-i", "deepseek", "--token", "x", "0.0.0.0:9999"]).unwrap();
         assert_eq!(cli.listen.as_deref(), Some("0.0.0.0:9999"));
         assert_eq!(cli.upstreams.len(), 1);
         assert_eq!(cli.upstreams[0].token.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn listen_flag_rejected() {
+        let err = parse_args(&["--listen", "0.0.0.0:9999", "-i", "deepseek"]).unwrap_err();
+        assert!(matches!(err, ParseError::UnknownFlag(_)));
+    }
+
+    #[test]
+    fn duplicate_positional_listen_rejected() {
+        let err = parse_args(&["-i", "deepseek", "127.0.0.1:7878", "0.0.0.0:9999"]).unwrap_err();
+        assert!(matches!(err, ParseError::UnknownFlag(_)));
     }
 
     #[test]
