@@ -133,12 +133,14 @@ impl OpenAIResponsesServer {
 async fn handle_responses(
     State(server): State<OpenAIResponsesServer>,
     headers: axum::http::HeaderMap,
+    authed: Option<axum::Extension<crate::server::usage::AuthedUser>>,
     Json(body): Json<wire::ResponsesRequest>,
 ) -> Response {
     let request_model = body.model.clone();
     let stateless = server.inner.stateless;
     let stream_requested_early = body.stream.unwrap_or(false);
     let auth_token = crate::server::usage::extract_client_token(&headers);
+    let resolved_user = authed.map(|axum::Extension(u)| u.user);
     let mut tracker = crate::server::usage::UsageTracker::new(
         server.inner.usage_logger.clone(),
         "openai_responses",
@@ -146,6 +148,7 @@ async fn handle_responses(
         auth_token,
         stream_requested_early,
     );
+    tracker.set_user(resolved_user);
 
     if stateless && body.previous_response_id.is_some() {
         let err = OpenAIError::invalid_request(

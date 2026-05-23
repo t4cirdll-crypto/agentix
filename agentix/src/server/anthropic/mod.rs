@@ -128,11 +128,13 @@ async fn shutdown_signal() {
 async fn handle_messages(
     State(server): State<AnthropicServer>,
     headers: axum::http::HeaderMap,
+    authed: Option<axum::Extension<crate::server::usage::AuthedUser>>,
     Json(body): Json<inbound::IncomingRequest>,
 ) -> Response {
     let stream_requested = body.stream.unwrap_or(false);
     let request_model = body.model.clone();
     let auth_token = crate::server::usage::extract_client_token(&headers);
+    let resolved_user = authed.map(|axum::Extension(u)| u.user);
 
     let mut tracker = crate::server::usage::UsageTracker::new(
         server.inner.usage_logger.clone(),
@@ -141,6 +143,7 @@ async fn handle_messages(
         auth_token,
         stream_requested,
     );
+    tracker.set_user(resolved_user);
 
     let translated = match inbound::translate(body) {
         Ok(t) => t,

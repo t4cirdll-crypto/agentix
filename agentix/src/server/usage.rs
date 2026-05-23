@@ -35,6 +35,9 @@ pub struct UsageRecord {
     /// Bearer token from the client's `Authorization` header, with the
     /// `Bearer ` prefix stripped. `None` if the client sent no auth header.
     pub auth_token: Option<String>,
+    /// User name resolved by the token registry (when token auth is
+    /// enabled). `None` when the proxy runs without `--tokens`.
+    pub user: Option<String>,
     /// Inbound wire format: `"anthropic" | "openai_chat" | "openai_responses"`.
     pub wire_format: &'static str,
     /// Model field as sent by the client (NOT the upstream rewrite).
@@ -67,6 +70,7 @@ impl UsageRecord {
             wire_format,
             model: model.into(),
             auth_token: None,
+            user: None,
             upstream_provider: None,
             upstream_model: None,
             usage: UsageStats::default(),
@@ -83,6 +87,7 @@ pub struct UsageRecordBuilder {
     wire_format: &'static str,
     model: String,
     auth_token: Option<String>,
+    user: Option<String>,
     upstream_provider: Option<Provider>,
     upstream_model: Option<String>,
     usage: UsageStats,
@@ -95,6 +100,10 @@ pub struct UsageRecordBuilder {
 impl UsageRecordBuilder {
     pub fn auth_token(mut self, t: Option<String>) -> Self {
         self.auth_token = t;
+        self
+    }
+    pub fn user(mut self, u: Option<String>) -> Self {
+        self.user = u;
         self
     }
     pub fn upstream(mut self, provider: Provider, model: impl Into<String>) -> Self {
@@ -128,6 +137,7 @@ impl UsageRecordBuilder {
         UsageRecord {
             ts: rfc3339_now(),
             auth_token: self.auth_token,
+            user: self.user,
             wire_format: self.wire_format,
             model: self.model,
             upstream_provider: self.upstream_provider.map(format_provider),
@@ -224,6 +234,14 @@ pub fn parse_bearer_token(header: Option<&str>) -> Option<String> {
     }
 }
 
+/// Identity attached to a request by the proxy-token auth middleware.
+/// Handlers read this from request extensions to enrich usage records.
+#[derive(Debug, Clone)]
+pub struct AuthedUser {
+    pub token: String,
+    pub user: String,
+}
+
 /// Resolve a client identifier from request headers. Tries `Authorization:
 /// Bearer ...` first (OpenAI convention), then `x-api-key` (Anthropic
 /// convention). Returns `None` if neither is set.
@@ -254,6 +272,7 @@ pub struct UsageTracker {
     wire_format: &'static str,
     model: String,
     auth_token: Option<String>,
+    user: Option<String>,
     streaming: bool,
     committed: Option<CommittedUpstream>,
     last_usage: UsageStats,
@@ -275,12 +294,17 @@ impl UsageTracker {
             wire_format,
             model: model.into(),
             auth_token,
+            user: None,
             streaming,
             committed: None,
             last_usage: UsageStats::default(),
             status: "ok",
             error: None,
         }
+    }
+
+    pub fn set_user(&mut self, user: Option<String>) {
+        self.user = user;
     }
 
     pub fn set_committed(&mut self, c: CommittedUpstream) {
@@ -324,6 +348,7 @@ impl UsageTracker {
         let duration_ms = self.started_at.elapsed().as_millis() as u64;
         let mut builder = UsageRecord::builder(self.wire_format, self.model)
             .auth_token(self.auth_token)
+            .user(self.user)
             .usage(self.last_usage)
             .duration_ms(duration_ms)
             .streaming(self.streaming);

@@ -34,10 +34,12 @@ codex = []
 server-anthropic = ["dep:axum"]
 server-openai-chat = ["dep:axum"]
 server-openai-responses = ["dep:axum"]
+server-admin = ["dep:axum", "dep:base64", "dep:toml"]
 cli = [
     "server-anthropic",
     "server-openai-chat",
     "server-openai-responses",
+    "server-admin",
     "claude-code",
     "codex",
     "dep:tracing-subscriber",
@@ -75,6 +77,9 @@ uuid = { version = "1", optional = true, features = ["v4"] }
 
 # Optional: tracing subscriber for the CLI binary
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
+
+# Optional: TOML for tokens.toml file (server-admin)
+toml = { version = "0.8", optional = true }
 
 [[example]]
 name = "10_claude_code"

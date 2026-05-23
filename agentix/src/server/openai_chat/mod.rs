@@ -92,6 +92,7 @@ async fn shutdown_signal() {
 async fn handle_chat_completions(
     State(server): State<OpenAIChatServer>,
     headers: axum::http::HeaderMap,
+    authed: Option<axum::Extension<crate::server::usage::AuthedUser>>,
     Json(body): Json<wire::ChatCompletionsRequest>,
 ) -> Response {
     let request_model = body.model.clone();
@@ -102,6 +103,7 @@ async fn handle_chat_completions(
         .map(|o| o.include_usage)
         .unwrap_or(false);
     let auth_token = crate::server::usage::extract_client_token(&headers);
+    let resolved_user = authed.map(|axum::Extension(u)| u.user);
     let mut tracker = crate::server::usage::UsageTracker::new(
         server.inner.usage_logger.clone(),
         "openai_chat",
@@ -109,6 +111,7 @@ async fn handle_chat_completions(
         auth_token,
         stream_requested,
     );
+    tracker.set_user(resolved_user);
 
     let translated = match inbound::translate(body) {
         Ok(t) => t,

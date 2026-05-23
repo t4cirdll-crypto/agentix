@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agentix — usage</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-neutral-50 text-neutral-900">
+  <header class="border-b border-neutral-200 bg-white">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded bg-neutral-900 text-white grid place-items-center text-sm font-bold">a</div>
+        <h1 class="text-lg font-semibold">agentix usage</h1>
+      </div>
+      <div class="text-sm text-neutral-500" id="last-refresh">loading…</div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-6 py-8 space-y-8">
+    <!-- Overview tiles -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Requests</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-requests">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Errors</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-errors">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Input tokens</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-input">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Output tokens</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-output">—</div>
+      </div>
+    </section>
+
+    <!-- Per-day chart -->
+    <section class="bg-white rounded-lg border border-neutral-200 p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold">Daily token usage</h2>
+        <div class="text-xs text-neutral-500">stacked: input / output / cache_read / reasoning</div>
+      </div>
+      <div class="h-64"><canvas id="chart-day"></canvas></div>
+    </section>
+
+    <!-- Per-user table + per-model donut -->
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div class="bg-white rounded-lg border border-neutral-200 p-4 lg:col-span-2">
+        <h2 class="font-semibold mb-3">Users</h2>
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-neutral-500">
+            <tr class="text-left">
+              <th class="py-2">User</th>
+              <th class="py-2 num text-right">Requests</th>
+              <th class="py-2 num text-right">Input</th>
+              <th class="py-2 num text-right">Output</th>
+              <th class="py-2 num text-right">Errors</th>
+              <th class="py-2">Last seen</th>
+            </tr>
+          </thead>
+          <tbody id="user-table"></tbody>
+        </table>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <h2 class="font-semibold mb-3">Upstream model split</h2>
+        <div class="h-56"><canvas id="chart-model"></canvas></div>
+      </div>
+    </section>
+
+    <!-- Recent requests -->
+    <section class="bg-white rounded-lg border border-neutral-200 p-4">
+      <h2 class="font-semibold mb-3">Recent requests</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-neutral-500">
+            <tr class="text-left">
+              <th class="py-2">When</th>
+              <th class="py-2">User</th>
+              <th class="py-2">Wire</th>
+              <th class="py-2">Model → upstream</th>
+              <th class="py-2 num text-right">In</th>
+              <th class="py-2 num text-right">Out</th>
+              <th class="py-2 num text-right">ms</th>
+              <th class="py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody id="recent-table"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+<script>
+const fmt = new Intl.NumberFormat('en-US');
+
+async function load() {
+  const r = await fetch('/admin/api/dashboard');
+  if (!r.ok) {
+    document.body.innerHTML = '<div class="p-8 text-red-700">load error: ' + r.status + '</div>';
+    return;
+  }
+  const d = await r.json();
+
+  document.getElementById('last-refresh').textContent =
+    'refreshed ' + new Date().toLocaleTimeString();
+
+  // Tiles
+  document.getElementById('tile-requests').textContent = fmt.format(d.overall.requests);
+  document.getElementById('tile-errors').textContent = fmt.format(d.overall.errors);
+  document.getElementById('tile-input').textContent = fmt.format(d.overall.input_tokens);
+  document.getElementById('tile-output').textContent = fmt.format(d.overall.output_tokens);
+
+  // Daily chart
+  renderDayChart(d.per_day);
+
+  // User table
+  const ub = document.getElementById('user-table');
+  ub.innerHTML = '';
+  for (const u of d.per_user) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-neutral-100';
+    tr.innerHTML = `
+      <td class="py-2 font-medium">${escapeHtml(u.user)}</td>
+      <td class="py-2 num text-right">${fmt.format(u.requests)}</td>
+      <td class="py-2 num text-right">${fmt.format(u.input_tokens)}</td>
+      <td class="py-2 num text-right">${fmt.format(u.output_tokens)}</td>
+      <td class="py-2 num text-right ${u.errors > 0 ? 'text-red-700' : 'text-neutral-400'}">${fmt.format(u.errors)}</td>
+      <td class="py-2 text-neutral-500">${escapeHtml(u.last_seen)}</td>
+    `;
+    ub.appendChild(tr);
+  }
+
+  // Model donut
+  renderModelChart(d.per_model);
+
+  // Recent
+  const rb = document.getElementById('recent-table');
+  rb.innerHTML = '';
+  for (const r of d.recent) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-neutral-100';
+    const upstream = r.upstream_provider
+      ? `${r.upstream_provider}/${r.upstream_model || ''}`
+      : '—';
+    tr.innerHTML = `
+      <td class="py-2 text-neutral-500 num">${escapeHtml(r.ts)}</td>
+      <td class="py-2">${escapeHtml(r.user || r.auth_token || '?')}</td>
+      <td class="py-2 text-neutral-600">${escapeHtml(r.wire_format)}</td>
+      <td class="py-2"><span class="text-neutral-500">${escapeHtml(r.model)}</span> → ${escapeHtml(upstream)}</td>
+      <td class="py-2 num text-right">${fmt.format(r.input_tokens)}</td>
+      <td class="py-2 num text-right">${fmt.format(r.output_tokens)}</td>
+      <td class="py-2 num text-right text-neutral-500">${fmt.format(r.duration_ms)}</td>
+      <td class="py-2">
+        <span class="${r.status === 'ok' ? 'text-emerald-700' : 'text-red-700'}">${escapeHtml(r.status)}</span>
+      </td>
+    `;
+    rb.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+let dayChart, modelChart;
+
+function renderDayChart(points) {
+  const ctx = document.getElementById('chart-day').getContext('2d');
+  if (dayChart) dayChart.destroy();
+  dayChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: points.map(p => p.date),
+      datasets: [
+        { label: 'input',          data: points.map(p => p.input_tokens),          backgroundColor: '#0ea5e9' },
+        { label: 'output',         data: points.map(p => p.output_tokens),         backgroundColor: '#10b981' },
+        { label: 'cache_read',     data: points.map(p => p.cache_read_tokens),     backgroundColor: '#a78bfa' },
+        { label: 'reasoning',      data: points.map(p => p.reasoning_tokens),      backgroundColor: '#f59e0b' },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, ticks: { callback: v => fmt.format(v) } },
+      },
+      plugins: { legend: { position: 'bottom' } },
+    },
+  });
+}
+
+function renderModelChart(buckets) {
+  const ctx = document.getElementById('chart-model').getContext('2d');
+  if (modelChart) modelChart.destroy();
+  modelChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: buckets.map(b => b.key),
+      datasets: [{
+        data: buckets.map(b => b.input_tokens + b.output_tokens),
+        backgroundColor: ['#0ea5e9','#10b981','#a78bfa','#f59e0b','#f43f5e','#6366f1','#84cc16'],
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+    },
+  });
+}
+
+load();
+setInterval(load, 30_000);
+</script>
+</body>
+</html>
