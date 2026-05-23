@@ -1,3 +1,27 @@
+## [0.26.0] - 2026-05-14
+
+### New features
+
+- **`codex` feature / `Provider::Codex`** — runs the local `codex app-server --listen stdio://` protocol as an agentix provider. Auth comes from the local Codex CLI session; no API key is required. The provider streams text deltas, maps agentix tools to Codex `dynamicTools`, and keeps agentix in control of tool execution.
+- **Codex multi-turn tool loop support** — when Codex requests a dynamic tool, agentix emits the tool call, interrupts the Codex turn, executes the Rust tool, then reconstructs the next Codex session with `thread/inject_items`. Opaque OpenAI Responses output items, including encrypted/provider state, are captured in `provider_data["openai_responses_items"]` and replayed verbatim on resume.
+- **Codex structured output and multimodal input** — strict JSON Schema maps to Codex turn `outputSchema`; image input maps to app-server `UserInput::image`.
+- **`Request::tool_choice(...)` builder** — exposes the existing public `tool_choice` field as a chainable request builder.
+- **Codex CLI upstream in `aaagw`** — `-i codex` now selects `Provider::Codex` and requires no token.
+- **Codex multi-turn example** — `examples/13_codex_agent_multiturn.rs` exercises five sequential tool calls through `agentix::agent`, verifying the restore boundary after every tool call.
+
+### Exactness / unsupported mappings
+
+`Provider::Codex` fails fast for request fields that Codex app-server cannot represent exactly: `temperature`, `max_tokens`, `extra_body`, JSON object response mode, JSON Schema with `strict=false`, forced tool choice (`required` or named tool), document/PDF input, and non-text tool results. `tool_choice=none` is implemented by registering no dynamic tools.
+
+### Tests
+
+- `cargo check --features codex`
+- `cargo check --features cli`
+- `cargo test --lib --features codex`
+- `cargo run --example 13_codex_agent_multiturn --features codex`
+
+---
+
 ## [0.25.0]
 
 ### New features

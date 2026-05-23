@@ -214,6 +214,8 @@ fn finalize_upstream(draft: UpstreamDraft) -> Result<UpstreamSpec, ParseError> {
         "openrouter" => Provider::OpenRouter,
         #[cfg(feature = "claude-code")]
         "claude-code" | "claudecode" => Provider::ClaudeCode,
+        #[cfg(feature = "codex")]
+        "codex" => Provider::Codex,
         other => return Err(ParseError::BadUpstream(other.to_string())),
     };
 
@@ -230,6 +232,8 @@ fn finalize_upstream(draft: UpstreamDraft) -> Result<UpstreamSpec, ParseError> {
         Provider::OpenRouter => "OPENROUTER_API_KEY",
         #[cfg(feature = "claude-code")]
         Provider::ClaudeCode => "", // no key required
+        #[cfg(feature = "codex")]
+        Provider::Codex => "", // no key required
     };
 
     let token = resolve_token(&draft, token_env);
