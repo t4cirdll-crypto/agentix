@@ -86,18 +86,39 @@ fn build_request(spec: &UpstreamSpec, t: &Translated) -> Request {
     req
 }
 
+/// Identifies which upstream actually served a request after a successful
+/// commit. Returned alongside the response so callers (usage logger, etc.)
+/// can attribute work to the right provider.
+#[derive(Debug, Clone)]
+pub struct CommittedUpstream {
+    pub index: usize,
+    pub provider: Provider,
+    pub model: String,
+}
+
 /// Non-streaming dispatch with fallback. Returns the first successful upstream
-/// result, or the last error if all upstreams fail.
+/// result plus which upstream produced it, or the last error if all upstreams
+/// fail.
 pub async fn complete_with_fallback(
     chain: &[UpstreamSpec],
     translated: &Translated,
     http: &reqwest::Client,
-) -> Result<CompleteResponse, ApiError> {
+) -> Result<(CompleteResponse, CommittedUpstream), ApiError> {
     let mut last_err: Option<ApiError> = None;
     for (i, spec) in chain.iter().enumerate() {
         let req = build_request(spec, translated);
+        let model = req.model.clone();
         match req.complete(http).await {
-            Ok(r) => return Ok(r),
+            Ok(r) => {
+                return Ok((
+                    r,
+                    CommittedUpstream {
+                        index: i,
+                        provider: spec.provider,
+                        model,
+                    },
+                ));
+            }
             Err(e) => {
                 warn!(
                     upstream_index = i,
@@ -122,10 +143,11 @@ pub async fn stream_with_fallback(
     chain: Vec<UpstreamSpec>,
     translated: Translated,
     http: reqwest::Client,
-) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
+) -> Result<(BoxStream<'static, LlmEvent>, CommittedUpstream), ApiError> {
     let mut last_err: Option<ApiError> = None;
     for (i, spec) in chain.iter().enumerate() {
         let req = build_request(spec, &translated);
+        let upstream_model = req.model.clone();
         let provider_label = format!("{:?}", spec.provider);
         let timeout = spec.pre_commit_timeout;
 
@@ -175,10 +197,17 @@ pub async fn stream_with_fallback(
         };
 
         // Step 3: commit. Re-prepend the peeked event and return the chained
-        // stream.
+        // stream + which upstream we committed to.
         let head = futures::stream::iter(std::iter::once(first));
         let combined = head.chain(stream);
-        return Ok(combined.boxed());
+        return Ok((
+            combined.boxed(),
+            CommittedUpstream {
+                index: i,
+                provider: spec.provider,
+                model: upstream_model,
+            },
+        ));
     }
     Err(last_err.unwrap_or_else(|| ApiError::Other("no upstreams configured".into())))
 }

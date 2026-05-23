@@ -49,6 +49,7 @@ struct Inner {
     /// (where in-memory state can't be shared) and for environments that
     /// must not retain conversation data.
     stateless: bool,
+    usage_logger: Option<Arc<crate::server::usage::UsageLogger>>,
 }
 
 impl OpenAIResponsesServer {
@@ -71,6 +72,7 @@ impl OpenAIResponsesServer {
                 http,
                 store,
                 stateless: false,
+                usage_logger: None,
             }),
         }
     }
@@ -86,6 +88,19 @@ impl OpenAIResponsesServer {
                 http: self.inner.http.clone(),
                 store: self.inner.store.clone(),
                 stateless: true,
+                usage_logger: self.inner.usage_logger.clone(),
+            }),
+        }
+    }
+
+    pub fn with_usage_logger(self, logger: Arc<crate::server::usage::UsageLogger>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                chain: self.inner.chain.clone(),
+                http: self.inner.http.clone(),
+                store: self.inner.store.clone(),
+                stateless: self.inner.stateless,
+                usage_logger: Some(logger),
             }),
         }
     }
@@ -117,17 +132,29 @@ impl OpenAIResponsesServer {
 
 async fn handle_responses(
     State(server): State<OpenAIResponsesServer>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<wire::ResponsesRequest>,
 ) -> Response {
     let request_model = body.model.clone();
     let stateless = server.inner.stateless;
+    let stream_requested_early = body.stream.unwrap_or(false);
+    let auth_token = crate::server::usage::extract_client_token(&headers);
+    let mut tracker = crate::server::usage::UsageTracker::new(
+        server.inner.usage_logger.clone(),
+        "openai_responses",
+        request_model.clone(),
+        auth_token,
+        stream_requested_early,
+    );
 
     if stateless && body.previous_response_id.is_some() {
-        return OpenAIError::invalid_request(
+        let err = OpenAIError::invalid_request(
             "this proxy is running in stateless mode; previous_response_id is not supported. \
              Send the full conversation history in `input` each turn.",
-        )
-        .into_response();
+        );
+        tracker.mark_error(format!("{err}"));
+        tracker.finalize();
+        return err.into_response();
     }
 
     let prepared = match inbound::translate(
@@ -137,7 +164,11 @@ async fn handle_responses(
         },
     ) {
         Ok(p) => p,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            tracker.mark_error(format!("{e}"));
+            tracker.finalize();
+            return e.into_response();
+        }
     };
 
     let response_id = outbound::synth_response_id();
@@ -153,19 +184,25 @@ async fn handle_responses(
         let chain = server.inner.chain.clone();
         let http = server.inner.http.clone();
         match fallback::stream_with_fallback(chain, prepared.translated, http).await {
-            Ok(llm_stream) => sse_response(
-                llm_stream,
-                response_id,
-                request_model,
-                instructions,
-                parent_id.clone(),
-                reasoning_summary,
-                store_requested,
-                store,
-                stored_input,
-            ),
+            Ok((llm_stream, committed)) => {
+                tracker.set_committed(committed);
+                sse_response(
+                    llm_stream,
+                    response_id,
+                    request_model,
+                    instructions,
+                    parent_id.clone(),
+                    reasoning_summary,
+                    store_requested,
+                    store,
+                    stored_input,
+                    tracker,
+                )
+            }
             Err(e) => {
                 error!(error = %e, "all upstreams failed before commit");
+                tracker.mark_error(format!("{e}"));
+                tracker.finalize();
                 OpenAIError::server(format!("all upstreams failed: {e}")).into_response()
             }
         }
@@ -177,7 +214,9 @@ async fn handle_responses(
         )
         .await
         {
-            Ok(resp) => {
+            Ok((resp, committed)) => {
+                tracker.set_committed(committed);
+                tracker.set_usage(resp.usage.clone());
                 // Snapshot the items we'll persist.
                 let mut all_items = stored_input;
                 if let Some(pd) = resp
@@ -221,10 +260,13 @@ async fn handle_responses(
                     instructions,
                     reasoning_summary,
                 );
+                tracker.finalize();
                 Json(body).into_response()
             }
             Err(e) => {
                 error!(error = %e, "all upstreams failed");
+                tracker.mark_error(format!("{e}"));
+                tracker.finalize();
                 OpenAIError::server(format!("all upstreams failed: {e}")).into_response()
             }
         }
@@ -242,6 +284,7 @@ fn sse_response(
     store_requested: bool,
     store: Arc<SessionStore>,
     stored_input_items: Vec<Value>,
+    tracker: crate::server::usage::UsageTracker,
 ) -> Response {
     let state = outbound::ResponsesStreamState::new(
         response_id.clone(),
@@ -258,6 +301,7 @@ fn sse_response(
         response_id,
         parent_id,
         stored_input_items,
+        tracker,
     );
     Sse::new(event_stream)
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
@@ -273,6 +317,7 @@ fn sse_events(
     response_id: String,
     parent_id: Option<String>,
     stored_input_items: Vec<Value>,
+    tracker: crate::server::usage::UsageTracker,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     stream::unfold(
         (
@@ -286,6 +331,7 @@ fn sse_events(
             response_id,
             parent_id,
             stored_input_items,
+            Some(tracker),
         ),
         |(
             mut state,
@@ -298,6 +344,7 @@ fn sse_events(
             response_id,
             parent_id,
             stored_input_items,
+            mut tracker,
         )| async move {
             loop {
                 if let Some((name, payload)) = buffered.pop_front() {
@@ -315,6 +362,7 @@ fn sse_events(
                             response_id,
                             parent_id,
                             stored_input_items,
+                            tracker,
                         ),
                     ));
                 }
@@ -325,12 +373,18 @@ fn sse_events(
                         items.extend(state.committed_items.iter().cloned());
                         store.put(response_id.clone(), items, parent_id.clone());
                     }
+                    if let Some(t) = tracker.take() {
+                        t.finalize();
+                    }
                     return None;
                 }
                 match stream.next().await {
                     Some(ev) => {
                         let is_done = matches!(ev, crate::msg::LlmEvent::Done);
                         let is_error = matches!(ev, crate::msg::LlmEvent::Error(_));
+                        if let Some(t) = tracker.as_mut() {
+                            t.observe(&ev);
+                        }
                         for frame in state.on_event(ev) {
                             buffered.push_back(frame);
                         }

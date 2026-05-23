@@ -30,6 +30,9 @@ struct Cli {
     /// Disable the OpenAI Responses session store. Forces every request to
     /// carry full conversation history; rejects `previous_response_id`.
     stateless: bool,
+    /// Path to a JSON-lines usage log. One record per completed request;
+    /// see `agentix::server::UsageRecord` for the schema.
+    usage_log: Option<String>,
     print_help: bool,
     print_version: bool,
 }
@@ -98,6 +101,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         }
         if arg == "--stateless" {
             cli.stateless = true;
+            continue;
+        }
+
+        if let Some(value) = strip_eq(&arg, &["--usage-log"]) {
+            cli.usage_log = Some(value);
+            continue;
+        }
+        if arg == "--usage-log" {
+            cli.usage_log = Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
             continue;
         }
 
@@ -303,6 +315,11 @@ OPTIONS:
                                   every request must carry full input each
                                   turn; previous_response_id is rejected.
                                   Required for multi-replica deployments.
+        --usage-log <PATH>       Append one JSON-lines record per completed
+                                  request to PATH. Fields: ts, auth_token,
+                                  wire_format, model, upstream_provider,
+                                  input/output/cache/reasoning tokens,
+                                  duration_ms, status. For billing.
     -h, --help                   Show this help
     -V, --version                Show version
 
@@ -373,33 +390,58 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Open the usage log if requested. Shared Arc across all enabled servers.
+    let usage_logger = match cli.usage_log.as_deref() {
+        Some(path) => {
+            match agentix::server::UsageLogger::open(path, true) {
+                Ok(l) => {
+                    tracing::info!(path = %path, "usage log open");
+                    Some(std::sync::Arc::new(l))
+                }
+                Err(e) => {
+                    eprintln!("failed to open usage log {path}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => None,
+    };
+
     // Merge every enabled reader's router so a single bind speaks all
     // formats simultaneously.
     let mut router = axum::Router::new();
-    let anthropic = AnthropicServer::new(chain.clone());
+    let mut anthropic = AnthropicServer::new(chain.clone());
+    if let Some(l) = usage_logger.clone() {
+        anthropic = anthropic.with_usage_logger(l);
+    }
     router = router.merge(anthropic.router());
 
     #[cfg(feature = "server-openai-chat")]
     {
         use agentix::server::OpenAIChatServer;
-        let openai = OpenAIChatServer::new(chain.clone());
+        let mut openai = OpenAIChatServer::new(chain.clone());
+        if let Some(l) = usage_logger.clone() {
+            openai = openai.with_usage_logger(l);
+        }
         router = router.merge(openai.router());
     }
 
     #[cfg(feature = "server-openai-responses")]
     {
         use agentix::server::OpenAIResponsesServer;
-        let resp = OpenAIResponsesServer::new(chain.clone());
-        let resp = if cli.stateless {
-            resp.stateless()
-        } else {
-            resp
-        };
+        let mut resp = OpenAIResponsesServer::new(chain.clone());
+        if cli.stateless {
+            resp = resp.stateless();
+        }
+        if let Some(l) = usage_logger.clone() {
+            resp = resp.with_usage_logger(l);
+        }
         router = router.merge(resp.router());
     }
 
     let _ = chain; // chain may be otherwise unused when only one feature is on
     let _ = cli.stateless; // unused when server-openai-responses is off
+    let _ = usage_logger; // unused warning silencer for the no-features case
 
     tracing::info!(%local, "aaagw gateway listening");
 
@@ -520,5 +562,17 @@ mod tests {
     fn stateless_flag_set() {
         let cli = parse_args(&["--stateless", "-i", "deepseek"]).unwrap();
         assert!(cli.stateless);
+    }
+
+    #[test]
+    fn usage_log_flag_next_arg() {
+        let cli = parse_args(&["-i", "deepseek", "--usage-log", "/var/log/aaagw.jsonl"]).unwrap();
+        assert_eq!(cli.usage_log.as_deref(), Some("/var/log/aaagw.jsonl"));
+    }
+
+    #[test]
+    fn usage_log_flag_eq_form() {
+        let cli = parse_args(&["-i", "deepseek", "--usage-log=/tmp/u.jsonl"]).unwrap();
+        assert_eq!(cli.usage_log.as_deref(), Some("/tmp/u.jsonl"));
     }
 }

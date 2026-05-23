@@ -53,6 +53,7 @@ pub struct AnthropicServer {
 struct Inner {
     chain: Vec<UpstreamSpec>,
     http: reqwest::Client,
+    usage_logger: Option<Arc<crate::server::usage::UsageLogger>>,
 }
 
 impl AnthropicServer {
@@ -67,7 +68,24 @@ impl AnthropicServer {
     /// `reqwest::Client` for upstream HTTP traffic.
     pub fn with_http_client(chain: Vec<UpstreamSpec>, http: reqwest::Client) -> Self {
         Self {
-            inner: Arc::new(Inner { chain, http }),
+            inner: Arc::new(Inner {
+                chain,
+                http,
+                usage_logger: None,
+            }),
+        }
+    }
+
+    /// Attach a usage logger. One JSON-lines record will be written per
+    /// completed request, carrying token counts, duration, auth token, and
+    /// upstream attribution. See [`crate::server::usage`] for the schema.
+    pub fn with_usage_logger(self, logger: Arc<crate::server::usage::UsageLogger>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                chain: self.inner.chain.clone(),
+                http: self.inner.http.clone(),
+                usage_logger: Some(logger),
+            }),
         }
     }
 
@@ -109,23 +127,42 @@ async fn shutdown_signal() {
 
 async fn handle_messages(
     State(server): State<AnthropicServer>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<inbound::IncomingRequest>,
 ) -> Response {
     let stream_requested = body.stream.unwrap_or(false);
     let request_model = body.model.clone();
+    let auth_token = crate::server::usage::extract_client_token(&headers);
+
+    let mut tracker = crate::server::usage::UsageTracker::new(
+        server.inner.usage_logger.clone(),
+        "anthropic",
+        request_model.clone(),
+        auth_token,
+        stream_requested,
+    );
 
     let translated = match inbound::translate(body) {
         Ok(t) => t,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            tracker.mark_error(format!("{e}"));
+            tracker.finalize();
+            return e.into_response();
+        }
     };
 
     if stream_requested {
         let chain = server.inner.chain.clone();
         let http = server.inner.http.clone();
         match fallback::stream_with_fallback(chain, translated, http).await {
-            Ok(llm_stream) => sse_response(llm_stream, request_model),
+            Ok((llm_stream, committed)) => {
+                tracker.set_committed(committed);
+                sse_response(llm_stream, request_model, tracker)
+            }
             Err(e) => {
                 error!(error = %e, "all upstreams failed before commit");
+                tracker.mark_error(format!("{e}"));
+                tracker.finalize();
                 ServerError::api(format!("all upstreams failed: {e}")).into_response()
             }
         }
@@ -133,23 +170,32 @@ async fn handle_messages(
         match fallback::complete_with_fallback(&server.inner.chain, &translated, &server.inner.http)
             .await
         {
-            Ok(resp) => {
+            Ok((resp, committed)) => {
+                tracker.set_committed(committed);
+                tracker.set_usage(resp.usage.clone());
                 let has_reasoning = translated.reasoning_effort.is_some()
                     && translated.reasoning_effort != Some(crate::request::ReasoningEffort::None);
                 let body = outbound::build_response_body(resp, &request_model, has_reasoning);
+                tracker.finalize();
                 Json(body).into_response()
             }
             Err(e) => {
                 error!(error = %e, "all upstreams failed");
+                tracker.mark_error(format!("{e}"));
+                tracker.finalize();
                 ServerError::api(format!("all upstreams failed: {e}")).into_response()
             }
         }
     }
 }
 
-fn sse_response(llm_stream: BoxStream<'static, crate::msg::LlmEvent>, model: String) -> Response {
+fn sse_response(
+    llm_stream: BoxStream<'static, crate::msg::LlmEvent>,
+    model: String,
+    tracker: crate::server::usage::UsageTracker,
+) -> Response {
     let state = outbound::SseState::new(model);
-    let event_stream = sse_events(state, llm_stream);
+    let event_stream = sse_events(state, llm_stream, tracker);
     Sse::new(event_stream)
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
         .into_response()
@@ -158,6 +204,7 @@ fn sse_response(llm_stream: BoxStream<'static, crate::msg::LlmEvent>, model: Str
 fn sse_events(
     state: outbound::SseState,
     llm_stream: BoxStream<'static, crate::msg::LlmEvent>,
+    tracker: crate::server::usage::UsageTracker,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     stream::unfold(
         (
@@ -165,28 +212,40 @@ fn sse_events(
             llm_stream,
             std::collections::VecDeque::<(&'static str, Value)>::new(),
             false,
+            Some(tracker),
         ),
-        |(mut state, mut stream, mut buffered, mut finished)| async move {
+        |(mut state, mut stream, mut buffered, mut finished, mut tracker)| async move {
             loop {
                 if let Some((name, payload)) = buffered.pop_front() {
                     let event = Event::default().event(name).data(payload.to_string());
                     return Some((
                         Ok::<_, Infallible>(event),
-                        (state, stream, buffered, finished),
+                        (state, stream, buffered, finished, tracker),
                     ));
                 }
                 if finished {
+                    if let Some(t) = tracker.take() {
+                        t.finalize();
+                    }
                     return None;
                 }
                 match stream.next().await {
                     Some(ev) => {
-                        let is_done = matches!(ev, crate::msg::LlmEvent::Done);
-                        let is_error = matches!(ev, crate::msg::LlmEvent::Error(_));
+                        if let Some(t) = tracker.as_mut() {
+                            if t.observe(&ev) {
+                                finished = true;
+                            }
+                        } else {
+                            // No tracker → still need to detect end-of-stream.
+                            if matches!(
+                                ev,
+                                crate::msg::LlmEvent::Done | crate::msg::LlmEvent::Error(_)
+                            ) {
+                                finished = true;
+                            }
+                        }
                         for frame in state.on_event(ev) {
                             buffered.push_back(frame);
-                        }
-                        if is_done || is_error {
-                            finished = true;
                         }
                     }
                     None => {

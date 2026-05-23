@@ -17,6 +17,7 @@
 
 pub mod fallback;
 pub mod translated;
+pub mod usage;
 
 pub mod anthropic;
 
@@ -30,6 +31,7 @@ pub use anthropic::AnthropicServer;
 pub use anthropic::error::ServerError;
 pub use fallback::UpstreamSpec;
 pub use translated::Translated;
+pub use usage::{UsageLogger, UsageRecord};
 
 #[cfg(feature = "server-openai-chat")]
 pub use openai_chat::OpenAIChatServer;
