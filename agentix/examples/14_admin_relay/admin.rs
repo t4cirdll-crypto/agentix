@@ -9,24 +9,19 @@
 //! The dashboard reads the same `--usage-log` jsonl that the readers write,
 //! so the data is always consistent without a separate ingestion step.
 
-pub mod aggregate;
-pub mod auth;
-pub mod tokens;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 
-pub use auth::{admin_basic_auth_layer, token_auth_layer};
-pub use crate::server::usage::AuthedUser;
-pub use tokens::{TokenEntry, TokenRegistry};
+pub use crate::auth::{admin_basic_auth_layer, token_auth_layer};
+pub use crate::tokens::{TokenEntry, TokenRegistry};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
@@ -75,7 +70,7 @@ async fn dashboard_html() -> Html<&'static str> {
 }
 
 async fn dashboard_api(State(server): State<AdminServer>) -> Response {
-    match aggregate::aggregate(&server.inner.usage_log_path, 100) {
+    match crate::aggregate::aggregate(&server.inner.usage_log_path, 100) {
         Ok(d) => Json(d).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to read usage log");
@@ -107,25 +102,9 @@ async fn tokens_api(State(server): State<AdminServer>) -> Response {
 }
 
 fn mask_token(t: &str) -> String {
-    // Show first 8 chars + length, never expose the full secret over the
-    // admin API. Even admins shouldn't be staring at raw secrets all day.
     let len = t.len();
     if len <= 8 {
         return format!("{}*", &t[..t.len().min(2)]);
     }
     format!("{}…({} chars)", &t[..8], len)
-}
-
-#[allow(dead_code)]
-fn _silence_unused_imports(_: header::HeaderName) {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mask_token_short_and_long() {
-        assert_eq!(mask_token("sk-relay-abcdefghij"), "sk-relay…(19 chars)");
-        assert_eq!(mask_token("abc"), "ab*");
-    }
 }

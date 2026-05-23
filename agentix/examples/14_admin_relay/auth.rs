@@ -19,8 +19,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde_json::json;
 
-use super::tokens::TokenRegistry;
-use crate::server::usage::AuthedUser;
+use agentix::server::AuthedUser;
+
+use crate::tokens::TokenRegistry;
 
 /// Build a middleware function that validates the incoming token against
 /// the registry. Cloneable; the registry is `Arc`-backed.

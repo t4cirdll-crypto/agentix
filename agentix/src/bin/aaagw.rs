@@ -33,12 +33,6 @@ struct Cli {
     /// Path to a JSON-lines usage log. One record per completed request;
     /// see `agentix::server::UsageRecord` for the schema.
     usage_log: Option<String>,
-    /// Path to tokens.toml — turns on bearer-token validation for `/v1/*`
-    /// and adds `user` attribution to the usage log.
-    tokens_file: Option<String>,
-    /// HTTP Basic password gating `/admin/*`. Empty/unset disables the
-    /// admin dashboard entirely.
-    admin_password: Option<String>,
     print_help: bool,
     print_version: bool,
 }
@@ -116,25 +110,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         }
         if arg == "--usage-log" {
             cli.usage_log = Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
-            continue;
-        }
-
-        if let Some(value) = strip_eq(&arg, &["--tokens"]) {
-            cli.tokens_file = Some(value);
-            continue;
-        }
-        if arg == "--tokens" {
-            cli.tokens_file = Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
-            continue;
-        }
-
-        if let Some(value) = strip_eq(&arg, &["--admin-password"]) {
-            cli.admin_password = Some(value);
-            continue;
-        }
-        if arg == "--admin-password" {
-            cli.admin_password =
-                Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
             continue;
         }
 
@@ -345,15 +320,12 @@ OPTIONS:
                                   user, wire_format, model, upstream_provider,
                                   input/output/cache/reasoning tokens,
                                   duration_ms, status. For billing.
-        --tokens <PATH>          Load tokens.toml. Inbound requests whose
-                                  Authorization/x-api-key isn't listed are
-                                  rejected with 401. Each token carries a
-                                  user name that lands in --usage-log.
-        --admin-password <PWD>   Enable the /admin dashboard, gated by HTTP
-                                  Basic auth (any username, password = PWD).
-                                  Requires --usage-log for data.
     -h, --help                   Show this help
     -V, --version                Show version
+
+For token validation + admin dashboard + per-user attribution, see
+examples/14_admin_relay/ — copy that directory to your own crate as a
+starting point.
 
 EXAMPLE:
     # Use Claude Code as primary, DeepSeek as fallback.
@@ -439,23 +411,6 @@ async fn main() -> ExitCode {
         None => None,
     };
 
-    // Load tokens.toml if requested. Drives /v1/* auth middleware and the
-    // admin dashboard's users view.
-    #[cfg(feature = "server-admin")]
-    let token_registry = match cli.tokens_file.as_deref() {
-        Some(path) => match agentix::server::TokenRegistry::from_file(path) {
-            Ok(reg) => {
-                tracing::info!(path = %path, count = reg.len(), "token registry loaded");
-                Some(reg)
-            }
-            Err(e) => {
-                eprintln!("failed to load tokens file {path}: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => None,
-    };
-
     // Merge every enabled reader's router so a single bind speaks all
     // formats simultaneously.
     let mut router = axum::Router::new();
@@ -486,30 +441,6 @@ async fn main() -> ExitCode {
             resp = resp.with_usage_logger(l);
         }
         router = router.merge(resp.router());
-    }
-
-    // Apply token-auth middleware over the merged proxy routes when a
-    // registry is loaded. Routes added BELOW (e.g. /admin) are immune
-    // because they're attached via Router::merge after this layer.
-    #[cfg(feature = "server-admin")]
-    if let Some(reg) = token_registry.clone() {
-        let layer = agentix::server::token_auth_layer(reg);
-        router = router.layer(axum::middleware::from_fn(layer));
-    }
-
-    // Mount /admin only when both prerequisites are set.
-    #[cfg(feature = "server-admin")]
-    if let (Some(pwd), Some(usage_path)) =
-        (cli.admin_password.as_deref(), cli.usage_log.as_deref())
-    {
-        use agentix::server::admin::AdminServer;
-        let reg = token_registry.clone().unwrap_or_default();
-        let admin = AdminServer::new(usage_path, pwd.to_string(), reg);
-        router = router.merge(admin.router());
-        tracing::info!("admin dashboard mounted at /admin");
-    } else if cli.admin_password.is_some() {
-        eprintln!("--admin-password requires --usage-log");
-        return ExitCode::FAILURE;
     }
 
     let _ = chain; // chain may be otherwise unused when only one feature is on
@@ -647,17 +578,5 @@ mod tests {
     fn usage_log_flag_eq_form() {
         let cli = parse_args(&["-i", "deepseek", "--usage-log=/tmp/u.jsonl"]).unwrap();
         assert_eq!(cli.usage_log.as_deref(), Some("/tmp/u.jsonl"));
-    }
-
-    #[test]
-    fn tokens_flag() {
-        let cli = parse_args(&["-i", "deepseek", "--tokens", "/etc/aaagw/tokens.toml"]).unwrap();
-        assert_eq!(cli.tokens_file.as_deref(), Some("/etc/aaagw/tokens.toml"));
-    }
-
-    #[test]
-    fn admin_password_flag_eq_form() {
-        let cli = parse_args(&["-i", "deepseek", "--admin-password=hunter2"]).unwrap();
-        assert_eq!(cli.admin_password.as_deref(), Some("hunter2"));
     }
 }

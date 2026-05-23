@@ -34,12 +34,10 @@ codex = []
 server-anthropic = ["dep:axum"]
 server-openai-chat = ["dep:axum"]
 server-openai-responses = ["dep:axum"]
-server-admin = ["dep:axum", "dep:base64", "dep:toml"]
 cli = [
     "server-anthropic",
     "server-openai-chat",
     "server-openai-responses",
-    "server-admin",
     "claude-code",
     "codex",
     "dep:tracing-subscriber",
@@ -78,9 +76,6 @@ uuid = { version = "1", optional = true, features = ["v4"] }
 # Optional: tracing subscriber for the CLI binary
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 
-# Optional: TOML for tokens.toml file (server-admin)
-toml = { version = "0.8", optional = true }
-
 [[example]]
 name = "10_claude_code"
 required-features = ["claude-code"]
@@ -93,6 +88,11 @@ required-features = ["server-anthropic"]
 name = "13_codex_agent_multiturn"
 required-features = ["codex"]
 
+[[example]]
+name = "14_admin_relay"
+path = "examples/14_admin_relay/main.rs"
+required-features = ["server-anthropic", "server-openai-chat", "server-openai-responses", "claude-code"]
+
 [[bin]]
 name = "aaagw"
 path = "src/bin/aaagw.rs"
@@ -103,3 +103,6 @@ axum = { version = "0.8", features = ["http1", "tokio"] }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+# Used only by examples/14_admin_relay.
+base64 = "0.22"
+toml = "0.8"
