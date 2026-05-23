@@ -3,12 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>agentix — usage</title>
+  <title>agentix admin</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
     .num { font-variant-numeric: tabular-nums; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body class="bg-neutral-50 text-neutral-900">
@@ -16,113 +17,233 @@
     <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
       <div class="flex items-center gap-3">
         <div class="w-8 h-8 rounded bg-neutral-900 text-white grid place-items-center text-sm font-bold">a</div>
-        <h1 class="text-lg font-semibold">agentix usage</h1>
+        <h1 class="text-lg font-semibold">agentix admin</h1>
       </div>
-      <div class="text-sm text-neutral-500" id="last-refresh">loading…</div>
+      <nav class="flex gap-1 text-sm">
+        <button data-tab="overview" class="tab-btn px-3 py-1.5 rounded bg-neutral-900 text-white">Overview</button>
+        <button data-tab="users"    class="tab-btn px-3 py-1.5 rounded hover:bg-neutral-100">Users</button>
+        <button data-tab="routes"   class="tab-btn px-3 py-1.5 rounded hover:bg-neutral-100">Routes</button>
+      </nav>
     </div>
   </header>
 
   <main class="max-w-6xl mx-auto px-6 py-8 space-y-8">
-    <!-- Overview tiles -->
-    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div class="bg-white rounded-lg border border-neutral-200 p-4">
-        <div class="text-xs uppercase tracking-wide text-neutral-500">Requests</div>
-        <div class="mt-1 text-2xl num font-semibold" id="tile-requests">—</div>
-      </div>
-      <div class="bg-white rounded-lg border border-neutral-200 p-4">
-        <div class="text-xs uppercase tracking-wide text-neutral-500">Errors</div>
-        <div class="mt-1 text-2xl num font-semibold" id="tile-errors">—</div>
-      </div>
-      <div class="bg-white rounded-lg border border-neutral-200 p-4">
-        <div class="text-xs uppercase tracking-wide text-neutral-500">Input tokens</div>
-        <div class="mt-1 text-2xl num font-semibold" id="tile-input">—</div>
-      </div>
-      <div class="bg-white rounded-lg border border-neutral-200 p-4">
-        <div class="text-xs uppercase tracking-wide text-neutral-500">Output tokens</div>
-        <div class="mt-1 text-2xl num font-semibold" id="tile-output">—</div>
-      </div>
-    </section>
 
-    <!-- Per-day chart -->
-    <section class="bg-white rounded-lg border border-neutral-200 p-4">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="font-semibold">Daily token usage</h2>
-        <div class="text-xs text-neutral-500">stacked: input / output / cache_read / reasoning</div>
-      </div>
-      <div class="h-64"><canvas id="chart-day"></canvas></div>
-    </section>
+    <!-- ── Overview tab ─────────────────────────────────────────── -->
+    <div data-tab-pane="overview" class="space-y-6">
+      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Requests</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-requests">—</div>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Errors</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-errors">—</div>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Input tokens</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-input">—</div>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Output tokens</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-output">—</div>
+        </div>
+      </section>
 
-    <!-- Per-user table + per-model donut -->
-    <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div class="bg-white rounded-lg border border-neutral-200 p-4 lg:col-span-2">
-        <h2 class="font-semibold mb-3">Users</h2>
+      <section class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">Daily token usage</h2>
+          <div class="text-xs text-neutral-500">stacked: input / output / cache_read / reasoning</div>
+        </div>
+        <div class="h-64"><canvas id="chart-day"></canvas></div>
+      </section>
+
+      <section class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="bg-white rounded-lg border border-neutral-200 p-4 lg:col-span-2">
+          <h2 class="font-semibold mb-3">Users (usage)</h2>
+          <table class="w-full text-sm">
+            <thead class="text-xs uppercase tracking-wide text-neutral-500">
+              <tr class="text-left">
+                <th class="py-2">User</th>
+                <th class="py-2 num text-right">Requests</th>
+                <th class="py-2 num text-right">Input</th>
+                <th class="py-2 num text-right">Output</th>
+                <th class="py-2 num text-right">Errors</th>
+                <th class="py-2">Last seen</th>
+              </tr>
+            </thead>
+            <tbody id="user-table"></tbody>
+          </table>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <h2 class="font-semibold mb-3">Upstream model split</h2>
+          <div class="h-56"><canvas id="chart-model"></canvas></div>
+        </div>
+      </section>
+
+      <section class="bg-white rounded-lg border border-neutral-200 p-4">
+        <h2 class="font-semibold mb-3">Recent requests</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="text-xs uppercase tracking-wide text-neutral-500">
+              <tr class="text-left">
+                <th class="py-2">When</th>
+                <th class="py-2">User</th>
+                <th class="py-2">Wire</th>
+                <th class="py-2">Model → upstream</th>
+                <th class="py-2 num text-right">In</th>
+                <th class="py-2 num text-right">Out</th>
+                <th class="py-2 num text-right">ms</th>
+                <th class="py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody id="recent-table"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ── Users tab ────────────────────────────────────────────── -->
+    <div data-tab-pane="users" class="space-y-6" hidden>
+      <section class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">API tokens</h2>
+          <button id="add-user-btn" class="px-3 py-1.5 rounded bg-neutral-900 text-white text-sm">+ New token</button>
+        </div>
         <table class="w-full text-sm">
           <thead class="text-xs uppercase tracking-wide text-neutral-500">
             <tr class="text-left">
               <th class="py-2">User</th>
-              <th class="py-2 num text-right">Requests</th>
-              <th class="py-2 num text-right">Input</th>
-              <th class="py-2 num text-right">Output</th>
-              <th class="py-2 num text-right">Errors</th>
-              <th class="py-2">Last seen</th>
+              <th class="py-2">Token</th>
+              <th class="py-2">Note</th>
+              <th class="py-2 num text-right">Budget (tokens/mo)</th>
+              <th class="py-2 w-32"></th>
             </tr>
           </thead>
-          <tbody id="user-table"></tbody>
+          <tbody id="users-table"></tbody>
         </table>
-      </div>
-      <div class="bg-white rounded-lg border border-neutral-200 p-4">
-        <h2 class="font-semibold mb-3">Upstream model split</h2>
-        <div class="h-56"><canvas id="chart-model"></canvas></div>
-      </div>
-    </section>
+      </section>
 
-    <!-- Recent requests -->
-    <section class="bg-white rounded-lg border border-neutral-200 p-4">
-      <h2 class="font-semibold mb-3">Recent requests</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="text-xs uppercase tracking-wide text-neutral-500">
-            <tr class="text-left">
-              <th class="py-2">When</th>
-              <th class="py-2">User</th>
-              <th class="py-2">Wire</th>
-              <th class="py-2">Model → upstream</th>
-              <th class="py-2 num text-right">In</th>
-              <th class="py-2 num text-right">Out</th>
-              <th class="py-2 num text-right">ms</th>
-              <th class="py-2">Status</th>
-            </tr>
-          </thead>
-          <tbody id="recent-table"></tbody>
-        </table>
-      </div>
-    </section>
+      <section id="add-user-form" class="bg-white rounded-lg border border-neutral-200 p-4" hidden>
+        <h3 class="font-semibold mb-3">New token</h3>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
+          <label class="flex flex-col gap-1">
+            <span class="text-xs uppercase tracking-wide text-neutral-500">User name *</span>
+            <input id="new-user" class="border border-neutral-300 rounded px-3 py-1.5" placeholder="alice" />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs uppercase tracking-wide text-neutral-500">Note</span>
+            <input id="new-note" class="border border-neutral-300 rounded px-3 py-1.5" placeholder="phd student" />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs uppercase tracking-wide text-neutral-500">Monthly budget</span>
+            <input id="new-budget" type="number" class="border border-neutral-300 rounded px-3 py-1.5" placeholder="1000000 (optional)" />
+          </label>
+          <div class="flex items-end gap-2">
+            <button id="save-user" class="px-3 py-1.5 rounded bg-neutral-900 text-white text-sm">Create</button>
+            <button id="cancel-user" class="px-3 py-1.5 rounded border border-neutral-300 text-sm">Cancel</button>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-neutral-500">Token generated server-side. Copy it from the row after creation — the full string isn't shown again on refresh.</p>
+        <pre id="new-token-display" class="hidden mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded text-sm font-mono break-all"></pre>
+      </section>
+    </div>
+
+    <!-- ── Routes tab ───────────────────────────────────────────── -->
+    <div data-tab-pane="routes" class="space-y-6" hidden>
+      <section class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="font-semibold">Routing rules</h2>
+            <p class="text-xs text-neutral-500 mt-1">
+              Each route matches inbound <code>model</code> by glob (<code>*opus*</code>, <code>*</code>).
+              First match wins. Within a match, fallback walks the upstream list on errors.
+              Edit a row inline and click Save.
+            </p>
+          </div>
+          <button id="add-route-btn" class="px-3 py-1.5 rounded bg-neutral-900 text-white text-sm">+ New route</button>
+        </div>
+        <div id="routes-list" class="space-y-3"></div>
+      </section>
+
+      <section id="add-route-form" class="bg-white rounded-lg border border-neutral-200 p-4" hidden>
+        <h3 class="font-semibold mb-3">New route</h3>
+        <label class="flex flex-col gap-1 text-sm mb-3">
+          <span class="text-xs uppercase tracking-wide text-neutral-500">Match pattern</span>
+          <input id="new-route-match" class="border border-neutral-300 rounded px-3 py-1.5" placeholder="*opus* or claude-* or *" />
+        </label>
+        <h4 class="text-xs uppercase tracking-wide text-neutral-500 mb-2">Fallback upstreams (try in order)</h4>
+        <div id="new-route-fallbacks" class="space-y-2"></div>
+        <div class="flex items-center justify-between mt-3">
+          <button id="add-fb-btn" class="text-sm text-neutral-700 underline">+ Add upstream</button>
+          <div class="flex gap-2">
+            <button id="cancel-route" class="px-3 py-1.5 rounded border border-neutral-300 text-sm">Cancel</button>
+            <button id="save-route" class="px-3 py-1.5 rounded bg-neutral-900 text-white text-sm">Create</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 
 <script>
 const fmt = new Intl.NumberFormat('en-US');
+let dayChart, modelChart;
 
-async function load() {
-  const r = await fetch('/admin/api/dashboard');
-  if (!r.ok) {
-    document.body.innerHTML = '<div class="p-8 text-red-700">load error: ' + r.status + '</div>';
-    return;
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('bg-neutral-900', b === btn);
+      b.classList.toggle('text-white', b === btn);
+      b.classList.toggle('hover:bg-neutral-100', b !== btn);
+    });
+    document.querySelectorAll('[data-tab-pane]').forEach(p => {
+      p.hidden = p.dataset.tabPane !== tab;
+    });
+    if (tab === 'overview') loadOverview();
+    if (tab === 'users')    loadUsers();
+    if (tab === 'routes')   loadRoutes();
+  });
+});
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+async function fetchJson(method, url, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
   }
-  const d = await r.json();
+  const r = await fetch(url, opts);
+  if (r.status === 204) return null;
+  const text = await r.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { /* */ }
+  if (!r.ok) {
+    const msg = (parsed && parsed.error) ? parsed.error : `HTTP ${r.status}: ${text}`;
+    throw new Error(msg);
+  }
+  return parsed;
+}
 
-  document.getElementById('last-refresh').textContent =
-    'refreshed ' + new Date().toLocaleTimeString();
+async function loadOverview() {
+  let d;
+  try { d = await fetchJson('GET', '/admin/api/dashboard'); }
+  catch (e) { console.error(e); return; }
 
-  // Tiles
   document.getElementById('tile-requests').textContent = fmt.format(d.overall.requests);
-  document.getElementById('tile-errors').textContent = fmt.format(d.overall.errors);
-  document.getElementById('tile-input').textContent = fmt.format(d.overall.input_tokens);
-  document.getElementById('tile-output').textContent = fmt.format(d.overall.output_tokens);
+  document.getElementById('tile-errors').textContent   = fmt.format(d.overall.errors);
+  document.getElementById('tile-input').textContent    = fmt.format(d.overall.input_tokens);
+  document.getElementById('tile-output').textContent   = fmt.format(d.overall.output_tokens);
 
-  // Daily chart
   renderDayChart(d.per_day);
+  renderModelChart(d.per_model);
 
-  // User table
   const ub = document.getElementById('user-table');
   ub.innerHTML = '';
   for (const u of d.per_user) {
@@ -134,23 +255,16 @@ async function load() {
       <td class="py-2 num text-right">${fmt.format(u.input_tokens)}</td>
       <td class="py-2 num text-right">${fmt.format(u.output_tokens)}</td>
       <td class="py-2 num text-right ${u.errors > 0 ? 'text-red-700' : 'text-neutral-400'}">${fmt.format(u.errors)}</td>
-      <td class="py-2 text-neutral-500">${escapeHtml(u.last_seen)}</td>
-    `;
+      <td class="py-2 text-neutral-500">${escapeHtml(u.last_seen)}</td>`;
     ub.appendChild(tr);
   }
 
-  // Model donut
-  renderModelChart(d.per_model);
-
-  // Recent
   const rb = document.getElementById('recent-table');
   rb.innerHTML = '';
   for (const r of d.recent) {
     const tr = document.createElement('tr');
     tr.className = 'border-t border-neutral-100';
-    const upstream = r.upstream_provider
-      ? `${r.upstream_provider}/${r.upstream_model || ''}`
-      : '—';
+    const upstream = r.upstream_provider ? `${r.upstream_provider}/${r.upstream_model || ''}` : '—';
     tr.innerHTML = `
       <td class="py-2 text-neutral-500 num">${escapeHtml(r.ts)}</td>
       <td class="py-2">${escapeHtml(r.user || r.auth_token || '?')}</td>
@@ -159,22 +273,10 @@ async function load() {
       <td class="py-2 num text-right">${fmt.format(r.input_tokens)}</td>
       <td class="py-2 num text-right">${fmt.format(r.output_tokens)}</td>
       <td class="py-2 num text-right text-neutral-500">${fmt.format(r.duration_ms)}</td>
-      <td class="py-2">
-        <span class="${r.status === 'ok' ? 'text-emerald-700' : 'text-red-700'}">${escapeHtml(r.status)}</span>
-      </td>
-    `;
+      <td class="py-2"><span class="${r.status === 'ok' ? 'text-emerald-700' : 'text-red-700'}">${escapeHtml(r.status)}</span></td>`;
     rb.appendChild(tr);
   }
 }
-
-function escapeHtml(s) {
-  if (s === null || s === undefined) return '';
-  return String(s).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
-let dayChart, modelChart;
 
 function renderDayChart(points) {
   const ctx = document.getElementById('chart-day').getContext('2d');
@@ -184,19 +286,16 @@ function renderDayChart(points) {
     data: {
       labels: points.map(p => p.date),
       datasets: [
-        { label: 'input',          data: points.map(p => p.input_tokens),          backgroundColor: '#0ea5e9' },
-        { label: 'output',         data: points.map(p => p.output_tokens),         backgroundColor: '#10b981' },
-        { label: 'cache_read',     data: points.map(p => p.cache_read_tokens),     backgroundColor: '#a78bfa' },
-        { label: 'reasoning',      data: points.map(p => p.reasoning_tokens),      backgroundColor: '#f59e0b' },
+        { label: 'input',      data: points.map(p => p.input_tokens),      backgroundColor: '#0ea5e9' },
+        { label: 'output',     data: points.map(p => p.output_tokens),     backgroundColor: '#10b981' },
+        { label: 'cache_read', data: points.map(p => p.cache_read_tokens), backgroundColor: '#a78bfa' },
+        { label: 'reasoning',  data: points.map(p => p.reasoning_tokens),  backgroundColor: '#f59e0b' },
       ],
     },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: { stacked: true, grid: { display: false } },
-        y: { stacked: true, ticks: { callback: v => fmt.format(v) } },
-      },
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { stacked: true, grid: { display: false } },
+                y: { stacked: true, ticks: { callback: v => fmt.format(v) } } },
       plugins: { legend: { position: 'bottom' } },
     },
   });
@@ -214,16 +313,191 @@ function renderModelChart(buckets) {
         backgroundColor: ['#0ea5e9','#10b981','#a78bfa','#f59e0b','#f43f5e','#6366f1','#84cc16'],
       }],
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom' } },
-    },
+    options: { responsive: true, maintainAspectRatio: false,
+               plugins: { legend: { position: 'bottom' } } },
   });
 }
 
-load();
-setInterval(load, 30_000);
+async function loadUsers() {
+  let d;
+  try { d = await fetchJson('GET', '/admin/api/tokens'); }
+  catch (e) { console.error(e); return; }
+
+  const tb = document.getElementById('users-table');
+  tb.innerHTML = '';
+  for (const t of d.tokens) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-neutral-100';
+    tr.innerHTML = `
+      <td class="py-2 font-medium">${escapeHtml(t.user)}</td>
+      <td class="py-2 font-mono text-xs text-neutral-600">${escapeHtml(t.token_masked)}</td>
+      <td class="py-2 text-neutral-500">${escapeHtml(t.note || '')}</td>
+      <td class="py-2 num text-right">${t.monthly_token_budget != null ? fmt.format(t.monthly_token_budget) : '<span class="text-neutral-300">∞</span>'}</td>
+      <td class="py-2 text-right">
+        <button class="text-xs text-neutral-500 underline mr-2" data-act="copy" data-token="${escapeHtml(t.token)}">copy</button>
+        <button class="text-xs text-red-700 underline" data-act="revoke" data-token="${escapeHtml(t.token)}">revoke</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const tok = btn.dataset.token;
+      if (btn.dataset.act === 'copy') {
+        await navigator.clipboard.writeText(tok);
+        btn.textContent = 'copied!';
+        setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+      } else if (btn.dataset.act === 'revoke') {
+        if (!confirm('Revoke this token? The user will get 401 on next request.')) return;
+        try {
+          await fetchJson('DELETE', '/admin/api/tokens/' + encodeURIComponent(tok));
+          loadUsers();
+        } catch (e) { alert('revoke failed: ' + e.message); }
+      }
+    });
+  });
+}
+
+document.getElementById('add-user-btn').addEventListener('click', () => {
+  document.getElementById('add-user-form').hidden = false;
+  document.getElementById('new-token-display').classList.add('hidden');
+  document.getElementById('new-user').focus();
+});
+document.getElementById('cancel-user').addEventListener('click', () => {
+  document.getElementById('add-user-form').hidden = true;
+});
+document.getElementById('save-user').addEventListener('click', async () => {
+  const user   = document.getElementById('new-user').value.trim();
+  const note   = document.getElementById('new-note').value.trim() || null;
+  const budget = document.getElementById('new-budget').value.trim();
+  if (!user) { alert('User name is required'); return; }
+  const body = { user };
+  if (note) body.note = note;
+  if (budget) body.monthly_token_budget = Number(budget);
+  try {
+    const r = await fetchJson('POST', '/admin/api/tokens', body);
+    const disp = document.getElementById('new-token-display');
+    disp.textContent = r.token;
+    disp.classList.remove('hidden');
+    document.getElementById('new-user').value = '';
+    document.getElementById('new-note').value = '';
+    document.getElementById('new-budget').value = '';
+    loadUsers();
+  } catch (e) { alert('create failed: ' + e.message); }
+});
+
+async function loadRoutes() {
+  let d;
+  try { d = await fetchJson('GET', '/admin/api/routes'); }
+  catch (e) { console.error(e); return; }
+
+  const wrap = document.getElementById('routes-list');
+  wrap.innerHTML = '';
+  d.routes.forEach((route, idx) => {
+    const card = document.createElement('div');
+    card.className = 'border border-neutral-200 rounded p-3';
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-xs uppercase tracking-wide text-neutral-500">#${idx} match</span>
+            <input class="font-mono text-sm border border-neutral-300 rounded px-2 py-1 flex-1"
+                   data-field="match" value="${escapeHtml(route.match)}" />
+          </div>
+          <div data-field="fallbacks" class="space-y-1.5"></div>
+          <button class="text-xs text-neutral-700 underline mt-2" data-act="add-fb-existing">+ Add upstream</button>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <button class="text-xs px-2 py-1 bg-neutral-900 text-white rounded" data-act="save-route">Save</button>
+          <button class="text-xs px-2 py-1 border border-red-300 text-red-700 rounded" data-act="del-route">Delete</button>
+        </div>
+      </div>`;
+
+    const fbWrap = card.querySelector('[data-field="fallbacks"]');
+    route.fallback.forEach(fb => fbWrap.appendChild(renderFallbackRow(fb)));
+
+    card.querySelector('[data-act="add-fb-existing"]').addEventListener('click', () => {
+      fbWrap.appendChild(renderFallbackRow({ target: 'deepseek' }));
+    });
+    card.querySelector('[data-act="del-route"]').addEventListener('click', async () => {
+      if (!confirm('Delete this route? Models matching it will fall through to the next route (or 5xx if nothing else matches).')) return;
+      try { await fetchJson('DELETE', '/admin/api/routes/' + idx); loadRoutes(); }
+      catch (e) { alert('delete failed: ' + e.message); }
+    });
+    card.querySelector('[data-act="save-route"]').addEventListener('click', async () => {
+      const updated = harvestRoute(card);
+      try { await fetchJson('PUT', '/admin/api/routes/' + idx, updated); loadRoutes(); }
+      catch (e) { alert('save failed: ' + e.message); }
+    });
+
+    wrap.appendChild(card);
+  });
+}
+
+function renderFallbackRow(fb) {
+  const row = document.createElement('div');
+  row.className = 'grid grid-cols-12 gap-1.5 items-center';
+  row.innerHTML = `
+    <input data-fb="target"    class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="claude-code | deepseek | https://..." value="${escapeHtml(fb.target || '')}" />
+    <input data-fb="model"     class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="model (optional)" value="${escapeHtml(fb.model || '')}" />
+    <input data-fb="token_env" class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="token env (optional)" value="${escapeHtml(fb.token_env || '')}" />
+    <input data-fb="base_url"  class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="base_url" value="${escapeHtml(fb.base_url || '')}" />
+    <button data-fb="remove"   class="col-span-1 text-xs text-red-700">✕</button>`;
+  row.querySelector('[data-fb="remove"]').addEventListener('click', () => row.remove());
+  return row;
+}
+
+function harvestRoute(card) {
+  const matchVal = card.querySelector('[data-field="match"]').value.trim();
+  const fbs = [...card.querySelectorAll('[data-field="fallbacks"] > div')].map(row => {
+    const get = k => row.querySelector(`[data-fb="${k}"]`).value.trim() || null;
+    const fb = { target: get('target') };
+    if (get('model'))     fb.model = get('model');
+    if (get('token_env')) fb.token_env = get('token_env');
+    if (get('base_url'))  fb.base_url = get('base_url');
+    return fb;
+  });
+  return { match: matchVal, fallback: fbs };
+}
+
+document.getElementById('add-route-btn').addEventListener('click', () => {
+  const form = document.getElementById('add-route-form');
+  form.hidden = false;
+  document.getElementById('new-route-match').value = '';
+  document.getElementById('new-route-fallbacks').innerHTML = '';
+  document.getElementById('new-route-fallbacks').appendChild(renderFallbackRow({ target: 'deepseek' }));
+  document.getElementById('new-route-match').focus();
+});
+document.getElementById('cancel-route').addEventListener('click', () => {
+  document.getElementById('add-route-form').hidden = true;
+});
+document.getElementById('add-fb-btn').addEventListener('click', () => {
+  document.getElementById('new-route-fallbacks').appendChild(renderFallbackRow({ target: 'deepseek' }));
+});
+document.getElementById('save-route').addEventListener('click', async () => {
+  const match = document.getElementById('new-route-match').value.trim();
+  if (!match) { alert('match pattern required'); return; }
+  const card = document.getElementById('add-route-form');
+  const fbs = [...card.querySelectorAll('#new-route-fallbacks > div')].map(row => {
+    const get = k => row.querySelector(`[data-fb="${k}"]`).value.trim() || null;
+    const fb = { target: get('target') };
+    if (get('model'))     fb.model = get('model');
+    if (get('token_env')) fb.token_env = get('token_env');
+    if (get('base_url'))  fb.base_url = get('base_url');
+    return fb;
+  });
+  if (!fbs.length || !fbs[0].target) { alert('at least one upstream with target required'); return; }
+  try {
+    await fetchJson('POST', '/admin/api/routes', { match, fallback: fbs });
+    document.getElementById('add-route-form').hidden = true;
+    loadRoutes();
+  } catch (e) { alert('create failed: ' + e.message); }
+});
+
+loadOverview();
+setInterval(() => {
+  const active = document.querySelector('.tab-btn.bg-neutral-900').dataset.tab;
+  if (active === 'overview') loadOverview();
+}, 30_000);
 </script>
 </body>
 </html>

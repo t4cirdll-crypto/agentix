@@ -51,7 +51,7 @@ pub struct AnthropicServer {
 }
 
 struct Inner {
-    chain: Vec<UpstreamSpec>,
+    resolver: Arc<dyn crate::server::fallback::ChainResolver>,
     http: reqwest::Client,
     usage_logger: Option<Arc<crate::server::usage::UsageLogger>>,
 }
@@ -61,7 +61,7 @@ impl AnthropicServer {
     /// first upstream is tried first; on any error before its stream commits
     /// to its first event, the next upstream is tried.
     pub fn new(chain: Vec<UpstreamSpec>) -> Self {
-        Self::with_http_client(chain, reqwest::Client::new())
+        Self::with_resolver(Arc::new(chain))
     }
 
     /// Same as [`AnthropicServer::new`] but uses a caller-provided
@@ -69,8 +69,22 @@ impl AnthropicServer {
     pub fn with_http_client(chain: Vec<UpstreamSpec>, http: reqwest::Client) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain,
+                resolver: Arc::new(chain),
                 http,
+                usage_logger: None,
+            }),
+        }
+    }
+
+    /// Use a custom [`ChainResolver`] — required when the per-request chain
+    /// depends on the request model (grouped routing) or when the chain
+    /// should be mutable at runtime. The default `new` wraps a static
+    /// `Vec<UpstreamSpec>`.
+    pub fn with_resolver(resolver: Arc<dyn crate::server::fallback::ChainResolver>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                resolver,
+                http: reqwest::Client::new(),
                 usage_logger: None,
             }),
         }
@@ -82,7 +96,7 @@ impl AnthropicServer {
     pub fn with_usage_logger(self, logger: Arc<crate::server::usage::UsageLogger>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain: self.inner.chain.clone(),
+                resolver: self.inner.resolver.clone(),
                 http: self.inner.http.clone(),
                 usage_logger: Some(logger),
             }),
@@ -155,7 +169,7 @@ async fn handle_messages(
     };
 
     if stream_requested {
-        let chain = server.inner.chain.clone();
+        let chain = server.inner.resolver.resolve(&request_model);
         let http = server.inner.http.clone();
         match fallback::stream_with_fallback(chain, translated, http).await {
             Ok((llm_stream, committed)) => {
@@ -170,9 +184,8 @@ async fn handle_messages(
             }
         }
     } else {
-        match fallback::complete_with_fallback(&server.inner.chain, &translated, &server.inner.http)
-            .await
-        {
+        let chain = server.inner.resolver.resolve(&request_model);
+        match fallback::complete_with_fallback(&chain, &translated, &server.inner.http).await {
             Ok((resp, committed)) => {
                 tracker.set_committed(committed);
                 tracker.set_usage(resp.usage.clone());
@@ -285,7 +298,7 @@ async fn handle_count_tokens(Json(body): Json<inbound::IncomingRequest>) -> Resp
 #[cfg_attr(feature = "server-openai-chat", allow(dead_code))]
 async fn handle_models(State(server): State<AnthropicServer>) -> Response {
     let mut data: Vec<Value> = Vec::new();
-    for (i, spec) in server.inner.chain.iter().enumerate() {
+    for (i, spec) in server.inner.resolver.list_all().iter().enumerate() {
         let id = spec
             .model
             .clone()

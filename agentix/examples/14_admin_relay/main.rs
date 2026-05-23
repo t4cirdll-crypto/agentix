@@ -1,6 +1,6 @@
 //! A fully-deployable relay: bearer-token validation + per-user usage log +
-//! HTTP Basic-gated admin dashboard. Copy this directory to your own crate
-//! as a starting point.
+//! HTTP Basic-gated admin dashboard + multi-upstream per-model routing.
+//! Copy this directory to your own crate as a starting point.
 //!
 //! Demonstrates how to compose agentix's library primitives:
 //!   - The three server modules (Anthropic Messages / OpenAI Chat / Responses)
@@ -11,34 +11,33 @@
 //!     (incl. resolved user name).
 //!   - An admin router under `/admin` gated by HTTP Basic; reads the usage
 //!     log and renders an embedded dashboard (Tailwind + Chart.js via CDN).
+//!   - Upstreams loaded from `aaagw.toml` with `match` glob patterns —
+//!     requests are dispatched by inbound `model` field.
 //!
 //! Run:
 //!
 //! ```bash
-//! cat >tokens.toml <<EOF
-//! [[token]]
-//! token = "sk-relay-alice"
-//! user  = "alice"
-//! EOF
-//!
+//! # Required env vars:
+//! #   TOKENS_FILE=tokens.toml
+//! #   ADMIN_PASSWORD=<pwd>
+//! #   USAGE_LOG=/var/log/aaagw/usage.jsonl
+//! #   AAAGW_CONFIG=aaagw.toml   (upstream routing)
 //! cargo run --example 14_admin_relay \
-//!     --features "server-anthropic,server-openai-chat,server-openai-responses,claude-code" \
+//!     --features "server-anthropic,server-openai-chat,server-openai-responses,claude-code,codex" \
 //!     -- 127.0.0.1:7878
-//! # env: TOKENS_FILE, ADMIN_PASSWORD, USAGE_LOG, AAAGW_UPSTREAM
 //! ```
 
 mod admin;
 mod aggregate;
 mod auth;
 mod me;
+mod routes;
 mod tokens;
 
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
-use agentix::Provider;
-use agentix::server::{AnthropicServer, UpstreamSpec, UsageLogger};
+use agentix::server::{AnthropicServer, UsageLogger};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -52,24 +51,31 @@ async fn main() -> ExitCode {
     let tokens_path = env_required("TOKENS_FILE");
     let admin_password = env_required("ADMIN_PASSWORD");
     let usage_log_path = env_required("USAGE_LOG");
+    let config_path = env_required("AAAGW_CONFIG");
 
-    if tokens_path.is_none() || admin_password.is_none() || usage_log_path.is_none() {
+    if tokens_path.is_none()
+        || admin_password.is_none()
+        || usage_log_path.is_none()
+        || config_path.is_none()
+    {
         eprintln!(
-            "set env vars: TOKENS_FILE=tokens.toml ADMIN_PASSWORD=<pwd> USAGE_LOG=/path.jsonl"
+            "set env vars: TOKENS_FILE=tokens.toml ADMIN_PASSWORD=<pwd> \
+             USAGE_LOG=/path.jsonl AAAGW_CONFIG=aaagw.toml"
         );
         return ExitCode::from(2);
     }
     let tokens_path = tokens_path.unwrap();
     let admin_password = admin_password.unwrap();
     let usage_log_path = usage_log_path.unwrap();
+    let config_path = config_path.unwrap();
 
-    // ── Upstream chain (single upstream by default; tweak this struct
-    //    or wire in CLI parsing for multi-upstream like aaagw does) ───
-    let upstream = std::env::var("AAAGW_UPSTREAM").unwrap_or_else(|_| "claude-code".into());
-    let chain = match build_chain(&upstream) {
-        Ok(c) => c,
+    let routes = match routes::RoutesHandle::load(&config_path) {
+        Ok(r) => {
+            tracing::info!(path = %config_path, count = r.len(), "routes loaded");
+            r
+        }
         Err(e) => {
-            eprintln!("upstream config: {e}");
+            eprintln!("routes: {e}");
             return ExitCode::from(2);
         }
     };
@@ -96,27 +102,32 @@ async fn main() -> ExitCode {
     };
 
     // ── Build the merged router ───────────────────────────────────────
+    // Wrap the routes handle in `Arc<dyn ChainResolver>` and share across
+    // all three protocol servers. Admin mutations to `routes` propagate
+    // automatically on the next request.
+    let resolver: Arc<dyn agentix::server::fallback::ChainResolver> = Arc::new(routes.clone());
     let mut router = axum::Router::new();
 
-    let anthropic =
-        AnthropicServer::new(chain.clone()).with_usage_logger(usage_logger.clone());
+    let anthropic = AnthropicServer::with_resolver(resolver.clone())
+        .with_usage_logger(usage_logger.clone());
     router = router.merge(anthropic.router());
 
     #[cfg(feature = "server-openai-chat")]
     {
         use agentix::server::OpenAIChatServer;
-        let openai =
-            OpenAIChatServer::new(chain.clone()).with_usage_logger(usage_logger.clone());
+        let openai = OpenAIChatServer::with_resolver(resolver.clone())
+            .with_usage_logger(usage_logger.clone());
         router = router.merge(openai.router());
     }
 
     #[cfg(feature = "server-openai-responses")]
     {
         use agentix::server::OpenAIResponsesServer;
-        let resp =
-            OpenAIResponsesServer::new(chain.clone()).with_usage_logger(usage_logger.clone());
+        let resp = OpenAIResponsesServer::with_resolver(resolver.clone())
+            .with_usage_logger(usage_logger.clone());
         router = router.merge(resp.router());
     }
+    let _ = resolver;
 
     // Layers on /v1/* — outer is added LAST, so this stack is:
     //   request → token_auth → quota → handler
@@ -134,8 +145,12 @@ async fn main() -> ExitCode {
     router = router.merge(me_server.router());
 
     // /admin routes (HTTP Basic).
-    let admin_server =
-        admin::AdminServer::new(usage_log_path.clone(), admin_password, token_registry);
+    let admin_server = admin::AdminServer::new(
+        usage_log_path.clone(),
+        admin_password,
+        token_registry,
+        routes.clone(),
+    );
     router = router.merge(admin_server.router());
 
     // ── Bind + serve ──────────────────────────────────────────────────
@@ -163,37 +178,6 @@ async fn main() -> ExitCode {
 
 fn env_required(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|s| !s.is_empty())
-}
-
-/// Minimal upstream config — provider shortname only. For multi-upstream
-/// fallback, copy the argv walker from `src/bin/aaagw.rs`.
-fn build_chain(name: &str) -> Result<Vec<UpstreamSpec>, String> {
-    let provider = match name {
-        "anthropic" => Provider::Anthropic,
-        "deepseek" => Provider::DeepSeek,
-        "openai" => Provider::OpenAI,
-        #[cfg(feature = "claude-code")]
-        "claude-code" => Provider::ClaudeCode,
-        #[cfg(feature = "codex")]
-        "codex" => Provider::Codex,
-        other => return Err(format!("unknown upstream: {other}")),
-    };
-
-    let token_env = match provider {
-        Provider::Anthropic => "ANTHROPIC_API_KEY",
-        Provider::DeepSeek => "DEEPSEEK_API_KEY",
-        Provider::OpenAI => "OPENAI_API_KEY",
-        _ => "",
-    };
-    let token = if token_env.is_empty() {
-        String::new()
-    } else {
-        std::env::var(token_env).unwrap_or_default()
-    };
-
-    let mut spec = UpstreamSpec::new(provider, token);
-    spec.pre_commit_timeout = Duration::from_secs(30);
-    Ok(vec![spec])
 }
 
 fn init_tracing() {

@@ -41,7 +41,7 @@ pub struct OpenAIResponsesServer {
 }
 
 struct Inner {
-    chain: Vec<UpstreamSpec>,
+    resolver: Arc<dyn crate::server::fallback::ChainResolver>,
     http: reqwest::Client,
     store: Arc<SessionStore>,
     /// When true, never persist session items and reject any request that
@@ -68,9 +68,21 @@ impl OpenAIResponsesServer {
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain,
+                resolver: Arc::new(chain),
                 http,
                 store,
+                stateless: false,
+                usage_logger: None,
+            }),
+        }
+    }
+
+    pub fn with_resolver(resolver: Arc<dyn crate::server::fallback::ChainResolver>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                resolver,
+                http: reqwest::Client::new(),
+                store: Arc::new(SessionStore::default()),
                 stateless: false,
                 usage_logger: None,
             }),
@@ -84,7 +96,7 @@ impl OpenAIResponsesServer {
     pub fn stateless(self) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain: self.inner.chain.clone(),
+                resolver: self.inner.resolver.clone(),
                 http: self.inner.http.clone(),
                 store: self.inner.store.clone(),
                 stateless: true,
@@ -96,7 +108,7 @@ impl OpenAIResponsesServer {
     pub fn with_usage_logger(self, logger: Arc<crate::server::usage::UsageLogger>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain: self.inner.chain.clone(),
+                resolver: self.inner.resolver.clone(),
                 http: self.inner.http.clone(),
                 store: self.inner.store.clone(),
                 stateless: self.inner.stateless,
@@ -184,7 +196,7 @@ async fn handle_responses(
     let store = server.inner.store.clone();
 
     if stream_requested {
-        let chain = server.inner.chain.clone();
+        let chain = server.inner.resolver.resolve(&request_model);
         let http = server.inner.http.clone();
         match fallback::stream_with_fallback(chain, prepared.translated, http).await {
             Ok((llm_stream, committed)) => {
@@ -210,12 +222,9 @@ async fn handle_responses(
             }
         }
     } else {
-        match fallback::complete_with_fallback(
-            &server.inner.chain,
-            &prepared.translated,
-            &server.inner.http,
-        )
-        .await
+        let chain = server.inner.resolver.resolve(&request_model);
+        match fallback::complete_with_fallback(&chain, &prepared.translated, &server.inner.http)
+            .await
         {
             Ok((resp, committed)) => {
                 tracker.set_committed(committed);

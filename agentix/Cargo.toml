@@ -41,6 +41,7 @@ cli = [
     "claude-code",
     "codex",
     "dep:tracing-subscriber",
+    "dep:toml",
 ]
 
 [dependencies]
@@ -76,6 +77,9 @@ uuid = { version = "1", optional = true, features = ["v4"] }
 # Optional: tracing subscriber for the CLI binary
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 
+# Optional: TOML parsing for aaagw --config
+toml = { version = "0.8", optional = true }
+
 [[example]]
 name = "10_claude_code"
 required-features = ["claude-code"]
@@ -91,7 +95,7 @@ required-features = ["codex"]
 [[example]]
 name = "14_admin_relay"
 path = "examples/14_admin_relay/main.rs"
-required-features = ["server-anthropic", "server-openai-chat", "server-openai-responses", "claude-code"]
+required-features = ["server-anthropic", "server-openai-chat", "server-openai-responses", "claude-code", "codex"]
 
 [[bin]]
 name = "aaagw"

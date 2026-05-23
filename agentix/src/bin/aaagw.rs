@@ -33,6 +33,10 @@ struct Cli {
     /// Path to a JSON-lines usage log. One record per completed request;
     /// see `agentix::server::UsageRecord` for the schema.
     usage_log: Option<String>,
+    /// Path to aaagw.toml. When present, `[[upstream]]` tables are appended
+    /// to the upstream chain (after any `-i` flags). Useful for letting
+    /// the deployment admin edit routing rules without touching systemd.
+    config: Option<String>,
     print_help: bool,
     print_version: bool,
 }
@@ -45,6 +49,9 @@ struct UpstreamDraft {
     token: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    /// Glob patterns this upstream serves (e.g. `claude-*`, `*sonnet*`).
+    /// Empty = catch-all. Repeatable.
+    match_patterns: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -113,6 +120,15 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
             continue;
         }
 
+        if let Some(value) = strip_eq(&arg, &["-c", "--config"]) {
+            cli.config = Some(value);
+            continue;
+        }
+        if matches!(arg.as_str(), "-c" | "--config") {
+            cli.config = Some(next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?);
+            continue;
+        }
+
         if let Some(value) = strip_eq(&arg, &["-i", "--in", "--inbound"]) {
             cli.upstreams.push(new_draft(value));
             continue;
@@ -133,6 +149,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
                 "--token" | "-k" => last.token = Some(value),
                 "--model" | "-m" => last.model = Some(value),
                 "--base-url" | "-u" => last.base_url = Some(value),
+                "--match" => last.match_patterns.push(value),
                 _ => return Err(ParseError::UnknownFlag(flag.to_string())),
             }
             Ok::<_, ParseError>(())
@@ -141,7 +158,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
         if let Some((flag, value)) = split_eq(&arg)
             && matches!(
                 flag,
-                "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u"
+                "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u" | "--match"
             )
         {
             bind_to_last(&mut cli, flag, value)?;
@@ -150,7 +167,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, ParseError> {
 
         if matches!(
             arg.as_str(),
-            "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u"
+            "--token" | "-k" | "--model" | "-m" | "--base-url" | "-u" | "--match"
         ) {
             let value = next().ok_or_else(|| ParseError::MissingValue(arg.clone()))?;
             bind_to_last(&mut cli, &arg, value)?;
@@ -177,7 +194,64 @@ fn new_draft(target: String) -> UpstreamDraft {
         token: None,
         model: None,
         base_url: None,
+        match_patterns: Vec::new(),
     }
+}
+
+/// TOML schema for `aaagw.toml`. Admins edit this without touching
+/// systemd. Each `[[upstream]]` table becomes one upstream draft, appended
+/// after any `-i` flags.
+///
+/// ```toml
+/// [[upstream]]
+/// target = "anthropic"            # provider shortname or URL
+/// match  = ["claude-*"]            # optional, repeatable, defaults catch-all
+/// # token: literal value
+/// # token_env: env var name (e.g. "ANTHROPIC_API_KEY")
+/// # base_url, model: optional overrides
+///
+/// [[upstream]]
+/// target = "https://api.deepseek.com/chat/completions"
+/// token_env = "DEEPSEEK_API_KEY"
+/// match = ["deepseek-*", "*"]
+/// ```
+#[derive(Debug, serde::Deserialize, Default)]
+struct ConfigFile {
+    #[serde(default)]
+    upstream: Vec<ConfigUpstream>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ConfigUpstream {
+    target: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    token_env: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default, rename = "match")]
+    match_patterns: Vec<String>,
+}
+
+fn load_config(path: &str) -> Result<Vec<UpstreamDraft>, String> {
+    let body = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    let parsed: ConfigFile = toml::from_str(&body).map_err(|e| format!("parse {path}: {e}"))?;
+    Ok(parsed
+        .upstream
+        .into_iter()
+        .map(|u| UpstreamDraft {
+            target: u.target,
+            token: u
+                .token
+                .or_else(|| u.token_env.as_deref().and_then(|e| std::env::var(e).ok())),
+            model: u.model,
+            base_url: u.base_url,
+            match_patterns: u.match_patterns,
+        })
+        .collect())
 }
 
 fn split_eq(arg: &str) -> Option<(&str, String)> {
@@ -210,6 +284,9 @@ fn finalize_upstream(draft: UpstreamDraft) -> Result<UpstreamSpec, ParseError> {
         spec = spec.with_base_url(base);
         if let Some(m) = draft.model {
             spec = spec.with_model(m);
+        }
+        for p in draft.match_patterns {
+            spec = spec.with_match(p);
         }
         spec.pre_commit_timeout = DEFAULT_PRE_COMMIT_TIMEOUT;
         return Ok(spec);
@@ -257,6 +334,9 @@ fn finalize_upstream(draft: UpstreamDraft) -> Result<UpstreamSpec, ParseError> {
     }
     if let Some(m) = draft.model {
         spec = spec.with_model(m);
+    }
+    for p in draft.match_patterns {
+        spec = spec.with_match(p);
     }
     spec.pre_commit_timeout = DEFAULT_PRE_COMMIT_TIMEOUT;
     Ok(spec)
@@ -311,6 +391,13 @@ OPTIONS:
                                   (falls back to <PROVIDER>_API_KEY env var)
     -m, --model <MODEL>          Override the client's model field upstream
     -u, --base-url <URL>         Override the upstream's base URL
+        --match <PATTERN>        Glob pattern of model names this upstream
+                                  handles (e.g. claude-*, *sonnet*, *).
+                                  Repeatable. Empty = catch-all.
+    -c, --config <PATH>          Load additional upstreams from a TOML file.
+                                  Each [[upstream]] table is appended to the
+                                  chain. Lets ops edit routing without
+                                  touching systemd.
         --stateless              Disable the Responses API session store —
                                   every request must carry full input each
                                   turn; previous_response_id is rejected.
@@ -344,7 +431,7 @@ async fn main() -> ExitCode {
     init_tracing();
 
     let args: Vec<String> = std::env::args().collect();
-    let cli = match parse(args) {
+    let mut cli = match parse(args) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}\n\n{HELP}");
@@ -359,6 +446,20 @@ async fn main() -> ExitCode {
     if cli.print_version {
         print_version();
         return ExitCode::SUCCESS;
+    }
+
+    // Load --config TOML if specified; append upstream drafts after any -i.
+    if let Some(path) = cli.config.as_deref() {
+        match load_config(path) {
+            Ok(extra) => {
+                tracing::info!(path = %path, count = extra.len(), "config loaded");
+                cli.upstreams.extend(extra);
+            }
+            Err(e) => {
+                eprintln!("config: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
 
     if cli.upstreams.is_empty() {
@@ -578,5 +679,17 @@ mod tests {
     fn usage_log_flag_eq_form() {
         let cli = parse_args(&["-i", "deepseek", "--usage-log=/tmp/u.jsonl"]).unwrap();
         assert_eq!(cli.usage_log.as_deref(), Some("/tmp/u.jsonl"));
+    }
+
+    #[test]
+    fn match_flag_binds_to_last_upstream() {
+        let cli = parse_args(&[
+            "-i", "anthropic", "--match", "claude-*",
+            "-i", "deepseek", "--match", "deepseek-*", "--match", "*",
+        ])
+        .unwrap();
+        assert_eq!(cli.upstreams.len(), 2);
+        assert_eq!(cli.upstreams[0].match_patterns, vec!["claude-*"]);
+        assert_eq!(cli.upstreams[1].match_patterns, vec!["deepseek-*", "*"]);
     }
 }

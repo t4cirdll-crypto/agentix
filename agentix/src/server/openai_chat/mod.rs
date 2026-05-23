@@ -35,21 +35,31 @@ pub struct OpenAIChatServer {
 }
 
 struct Inner {
-    chain: Vec<UpstreamSpec>,
+    resolver: Arc<dyn crate::server::fallback::ChainResolver>,
     http: reqwest::Client,
     usage_logger: Option<Arc<crate::server::usage::UsageLogger>>,
 }
 
 impl OpenAIChatServer {
     pub fn new(chain: Vec<UpstreamSpec>) -> Self {
-        Self::with_http_client(chain, reqwest::Client::new())
+        Self::with_resolver(Arc::new(chain))
     }
 
     pub fn with_http_client(chain: Vec<UpstreamSpec>, http: reqwest::Client) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain,
+                resolver: Arc::new(chain),
                 http,
+                usage_logger: None,
+            }),
+        }
+    }
+
+    pub fn with_resolver(resolver: Arc<dyn crate::server::fallback::ChainResolver>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                resolver,
+                http: reqwest::Client::new(),
                 usage_logger: None,
             }),
         }
@@ -58,7 +68,7 @@ impl OpenAIChatServer {
     pub fn with_usage_logger(self, logger: Arc<crate::server::usage::UsageLogger>) -> Self {
         Self {
             inner: Arc::new(Inner {
-                chain: self.inner.chain.clone(),
+                resolver: self.inner.resolver.clone(),
                 http: self.inner.http.clone(),
                 usage_logger: Some(logger),
             }),
@@ -123,7 +133,7 @@ async fn handle_chat_completions(
     };
 
     if stream_requested {
-        let chain = server.inner.chain.clone();
+        let chain = server.inner.resolver.resolve(&request_model);
         let http = server.inner.http.clone();
         match fallback::stream_with_fallback(chain, translated, http).await {
             Ok((llm_stream, committed)) => {
@@ -138,9 +148,8 @@ async fn handle_chat_completions(
             }
         }
     } else {
-        match fallback::complete_with_fallback(&server.inner.chain, &translated, &server.inner.http)
-            .await
-        {
+        let chain = server.inner.resolver.resolve(&request_model);
+        match fallback::complete_with_fallback(&chain, &translated, &server.inner.http).await {
             Ok((resp, committed)) => {
                 tracker.set_committed(committed);
                 tracker.set_usage(resp.usage.clone());
@@ -242,7 +251,7 @@ async fn handle_models(State(server): State<OpenAIChatServer>) -> Response {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     };
-    for spec in server.inner.chain.iter() {
+    for spec in server.inner.resolver.list_all() {
         let id = spec
             .model
             .clone()
