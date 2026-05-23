@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>my usage — agentix</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-neutral-50 text-neutral-900">
+  <header class="border-b border-neutral-200 bg-white">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded bg-neutral-900 text-white grid place-items-center text-sm font-bold">a</div>
+        <h1 class="text-lg font-semibold">my usage <span id="who" class="text-neutral-500 font-normal"></span></h1>
+      </div>
+      <div class="text-sm text-neutral-500" id="month-label">—</div>
+    </div>
+  </header>
+
+  <!-- Auth prompt -->
+  <section id="auth-pane" class="max-w-5xl mx-auto px-6 py-12 hidden">
+    <div class="bg-white rounded-lg border border-neutral-200 p-6">
+      <h2 class="font-semibold mb-2">Sign in with your API key</h2>
+      <p class="text-sm text-neutral-600 mb-4">
+        Paste the relay API key your administrator gave you (starts with
+        <code>sk-relay-</code>). It's stored only in this browser tab.
+      </p>
+      <div class="flex gap-3">
+        <input id="apikey-input" type="password" placeholder="sk-relay-..."
+               class="flex-1 border border-neutral-300 rounded px-3 py-2 text-sm font-mono" />
+        <button id="apikey-submit"
+                class="bg-neutral-900 text-white rounded px-4 py-2 text-sm font-medium">
+          View usage
+        </button>
+      </div>
+      <p id="auth-error" class="text-sm text-red-700 mt-3 hidden"></p>
+    </div>
+  </section>
+
+  <!-- Main pane -->
+  <main id="main-pane" class="max-w-5xl mx-auto px-6 py-8 space-y-6 hidden">
+    <!-- Budget tile -->
+    <section id="budget-card" class="bg-white rounded-lg border border-neutral-200 p-5 hidden">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-semibold">This month's budget</h2>
+        <button id="signout-btn" class="text-xs text-neutral-500 underline">sign out</button>
+      </div>
+      <div class="flex items-baseline gap-3">
+        <span class="text-3xl num font-semibold" id="budget-used">—</span>
+        <span class="text-neutral-500 num">/ <span id="budget-total">—</span> tokens</span>
+      </div>
+      <div class="w-full bg-neutral-100 rounded-full h-3 mt-4 overflow-hidden">
+        <div id="budget-bar" class="bg-emerald-500 h-3" style="width:0%"></div>
+      </div>
+      <div class="text-sm text-neutral-600 mt-2">
+        <span class="num" id="budget-remaining">—</span> tokens remaining
+      </div>
+    </section>
+
+    <!-- No-budget tile (when monthly_token_budget unset) -->
+    <section id="no-budget-card" class="bg-white rounded-lg border border-neutral-200 p-5 hidden">
+      <div class="flex items-center justify-between">
+        <h2 class="font-semibold">This month's usage</h2>
+        <button id="signout-btn-2" class="text-xs text-neutral-500 underline">sign out</button>
+      </div>
+      <div class="mt-2 text-3xl num font-semibold" id="usage-no-budget">—</div>
+      <div class="text-sm text-neutral-500">tokens (no budget configured for your account)</div>
+    </section>
+
+    <!-- Tiles -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Requests</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-requests">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Errors</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-errors">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Input</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-input">—</div>
+      </div>
+      <div class="bg-white rounded-lg border border-neutral-200 p-4">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">Output</div>
+        <div class="mt-1 text-2xl num font-semibold" id="tile-output">—</div>
+      </div>
+    </section>
+
+    <!-- Daily chart -->
+    <section class="bg-white rounded-lg border border-neutral-200 p-4">
+      <h2 class="font-semibold mb-3">Daily token usage</h2>
+      <div class="h-64"><canvas id="chart-day"></canvas></div>
+    </section>
+
+    <!-- Recent -->
+    <section class="bg-white rounded-lg border border-neutral-200 p-4">
+      <h2 class="font-semibold mb-3">Recent requests</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-neutral-500">
+            <tr class="text-left">
+              <th class="py-2">When</th>
+              <th class="py-2">Wire</th>
+              <th class="py-2">Model → upstream</th>
+              <th class="py-2 num text-right">In</th>
+              <th class="py-2 num text-right">Out</th>
+              <th class="py-2 num text-right">ms</th>
+              <th class="py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody id="recent-table"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+<script>
+const fmt = new Intl.NumberFormat('en-US');
+const APIKEY_STORAGE_KEY = 'agentix.relay.apikey';
+
+function showAuth() {
+  document.getElementById('auth-pane').classList.remove('hidden');
+  document.getElementById('main-pane').classList.add('hidden');
+}
+function showMain() {
+  document.getElementById('auth-pane').classList.add('hidden');
+  document.getElementById('main-pane').classList.remove('hidden');
+}
+
+document.getElementById('apikey-submit').addEventListener('click', () => {
+  const key = document.getElementById('apikey-input').value.trim();
+  if (!key) return;
+  sessionStorage.setItem(APIKEY_STORAGE_KEY, key);
+  load();
+});
+document.getElementById('apikey-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('apikey-submit').click();
+});
+function signOut() {
+  sessionStorage.removeItem(APIKEY_STORAGE_KEY);
+  showAuth();
+}
+document.getElementById('signout-btn').addEventListener('click', signOut);
+document.getElementById('signout-btn-2').addEventListener('click', signOut);
+
+async function load() {
+  const key = sessionStorage.getItem(APIKEY_STORAGE_KEY);
+  if (!key) { showAuth(); return; }
+
+  const r = await fetch('/me/api/usage', {
+    headers: { Authorization: 'Bearer ' + key },
+  });
+  if (r.status === 401) {
+    sessionStorage.removeItem(APIKEY_STORAGE_KEY);
+    const err = document.getElementById('auth-error');
+    err.textContent = 'API key was rejected. Check the key with your administrator.';
+    err.classList.remove('hidden');
+    showAuth();
+    return;
+  }
+  if (!r.ok) {
+    document.body.innerHTML = '<div class="p-8 text-red-700">load error: ' + r.status + '</div>';
+    return;
+  }
+  const d = await r.json();
+  showMain();
+
+  document.getElementById('who').textContent = '— ' + d.user;
+  document.getElementById('month-label').textContent = d.month;
+
+  // Budget tile
+  const budgetCard = document.getElementById('budget-card');
+  const noBudgetCard = document.getElementById('no-budget-card');
+  const usedTokens = d.totals.input_tokens + d.totals.output_tokens;
+  if (d.monthly_token_budget != null) {
+    budgetCard.classList.remove('hidden');
+    noBudgetCard.classList.add('hidden');
+    document.getElementById('budget-used').textContent = fmt.format(usedTokens);
+    document.getElementById('budget-total').textContent = fmt.format(d.monthly_token_budget);
+    document.getElementById('budget-remaining').textContent =
+      fmt.format(d.remaining_tokens != null ? d.remaining_tokens : 0);
+    const pct = Math.min(100, (usedTokens / d.monthly_token_budget) * 100);
+    const bar = document.getElementById('budget-bar');
+    bar.style.width = pct.toFixed(1) + '%';
+    bar.className = (pct >= 100)
+      ? 'bg-red-600 h-3'
+      : (pct >= 80 ? 'bg-amber-500 h-3' : 'bg-emerald-500 h-3');
+  } else {
+    budgetCard.classList.add('hidden');
+    noBudgetCard.classList.remove('hidden');
+    document.getElementById('usage-no-budget').textContent = fmt.format(usedTokens);
+  }
+
+  // Tiles
+  document.getElementById('tile-requests').textContent = fmt.format(d.totals.requests);
+  document.getElementById('tile-errors').textContent = fmt.format(d.totals.errors);
+  document.getElementById('tile-input').textContent = fmt.format(d.totals.input_tokens);
+  document.getElementById('tile-output').textContent = fmt.format(d.totals.output_tokens);
+
+  // Daily chart
+  renderDayChart(d.per_day);
+
+  // Recent
+  const rb = document.getElementById('recent-table');
+  rb.innerHTML = '';
+  for (const r of d.recent) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-t border-neutral-100';
+    const upstream = r.upstream_provider
+      ? `${r.upstream_provider}/${r.upstream_model || ''}` : '—';
+    tr.innerHTML = `
+      <td class="py-2 text-neutral-500 num">${escapeHtml(r.ts)}</td>
+      <td class="py-2 text-neutral-600">${escapeHtml(r.wire_format)}</td>
+      <td class="py-2"><span class="text-neutral-500">${escapeHtml(r.model)}</span> → ${escapeHtml(upstream)}</td>
+      <td class="py-2 num text-right">${fmt.format(r.input_tokens)}</td>
+      <td class="py-2 num text-right">${fmt.format(r.output_tokens)}</td>
+      <td class="py-2 num text-right text-neutral-500">${fmt.format(r.duration_ms)}</td>
+      <td class="py-2 ${r.status === 'ok' ? 'text-emerald-700' : 'text-red-700'}">${escapeHtml(r.status)}</td>
+    `;
+    rb.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+let dayChart;
+function renderDayChart(points) {
+  const ctx = document.getElementById('chart-day').getContext('2d');
+  if (dayChart) dayChart.destroy();
+  dayChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: points.map(p => p.date),
+      datasets: [
+        { label: 'input',  data: points.map(p => p.input_tokens),  backgroundColor: '#0ea5e9' },
+        { label: 'output', data: points.map(p => p.output_tokens), backgroundColor: '#10b981' },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, ticks: { callback: v => fmt.format(v) } },
+      },
+      plugins: { legend: { position: 'bottom' } },
+    },
+  });
+}
+
+load();
+setInterval(load, 30_000);
+</script>
+</body>
+</html>

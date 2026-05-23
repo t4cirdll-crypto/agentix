@@ -19,6 +19,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use serde_json::json;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use agentix::server::AuthedUser;
 
 use crate::tokens::TokenRegistry;
@@ -126,6 +129,76 @@ pub fn admin_basic_auth_layer(
                 );
                 return resp;
             }
+            next.run(req).await
+        })
+    }
+}
+
+/// Build a middleware that enforces per-user monthly token budgets. Runs
+/// AFTER `token_auth_layer` (so `AuthedUser` is on the request) and BEFORE
+/// the proxy handlers. Scans the usage log to compute the user's current
+/// month's spend; rejects with 429 when budget is exhausted.
+///
+/// Performance: linear scan of the usage log on every request. Fine for
+/// small deployments. For production replace with a sqlite-backed counter
+/// or an in-memory cache refreshed periodically.
+pub fn quota_layer(
+    registry: TokenRegistry,
+    usage_log: PathBuf,
+) -> impl Clone
++ Send
++ Sync
++ 'static
++ Fn(
+    Request,
+    Next,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+    let registry = registry;
+    let usage_log = Arc::new(usage_log);
+    move |req: Request, next: Next| {
+        let registry = registry.clone();
+        let usage_log = usage_log.clone();
+        Box::pin(async move {
+            let Some(authed) = req.extensions().get::<AuthedUser>().cloned() else {
+                // No identity → let token_auth_layer have rejected this.
+                // Pass through (this layer is best mounted AFTER token auth).
+                return next.run(req).await;
+            };
+
+            let budget = registry
+                .lookup(&authed.token)
+                .and_then(|e| e.monthly_token_budget);
+            let Some(budget) = budget else {
+                // No budget configured → unlimited.
+                return next.run(req).await;
+            };
+
+            let used = match crate::aggregate::user_month_token_total(
+                usage_log.as_ref(),
+                &authed.user,
+            ) {
+                Ok(n) => n,
+                Err(_) => {
+                    // Reading the log failed (e.g. file missing) → allow
+                    // through and log; don't block traffic on log issues.
+                    return next.run(req).await;
+                }
+            };
+
+            if used >= budget {
+                let body = json!({
+                    "error": {
+                        "message": format!(
+                            "monthly token budget exhausted: used {used} of {budget}",
+                        ),
+                        "type": "rate_limit_error",
+                        "param": serde_json::Value::Null,
+                        "code": "monthly_budget_exhausted",
+                    }
+                });
+                return (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+            }
+
             next.run(req).await
         })
     }

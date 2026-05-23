@@ -6,7 +6,8 @@
 //! [[token]]
 //! token = "sk-relay-alice"
 //! user  = "alice"
-//! note  = "alice's API key"   # optional
+//! note  = "alice's API key"           # optional
+//! monthly_token_budget = 1_000_000    # optional, input + output combined
 //!
 //! [[token]]
 //! token = "sk-relay-bob"
@@ -16,7 +17,9 @@
 //! Any inbound request whose `Authorization: Bearer <token>` or `x-api-key`
 //! header doesn't match a known token gets rejected with `401`. The matched
 //! user name is forwarded into the usage log so the admin dashboard can
-//! group by person.
+//! group by person. When `monthly_token_budget` is set, requests are
+//! blocked with `429` once the user's current calendar-month usage reaches
+//! the budget.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -36,12 +39,17 @@ struct TokenEntryRaw {
     user: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    monthly_token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TokenEntry {
     pub user: String,
     pub note: Option<String>,
+    /// Combined input+output tokens per calendar month. `None` means
+    /// unlimited.
+    pub monthly_token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -65,6 +73,7 @@ impl TokenRegistry {
                 TokenEntry {
                     user: t.user,
                     note: t.note,
+                    monthly_token_budget: t.monthly_token_budget,
                 },
             );
         }
@@ -100,6 +109,7 @@ mod tests {
             [[token]]
             token = "sk-relay-alice"
             user = "alice"
+            monthly_token_budget = 1000000
 
             [[token]]
             token = "sk-relay-bob"
@@ -108,10 +118,13 @@ mod tests {
         "#;
         let reg = TokenRegistry::from_toml(body).unwrap();
         assert_eq!(reg.len(), 2);
-        assert_eq!(reg.lookup("sk-relay-alice").unwrap().user, "alice");
+        let alice = reg.lookup("sk-relay-alice").unwrap();
+        assert_eq!(alice.user, "alice");
+        assert_eq!(alice.monthly_token_budget, Some(1_000_000));
         let bob = reg.lookup("sk-relay-bob").unwrap();
         assert_eq!(bob.user, "bob");
         assert_eq!(bob.note.as_deref(), Some("phd student"));
+        assert!(bob.monthly_token_budget.is_none());
         assert!(reg.lookup("sk-relay-unknown").is_none());
     }
 

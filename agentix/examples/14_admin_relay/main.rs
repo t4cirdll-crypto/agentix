@@ -30,6 +30,7 @@
 mod admin;
 mod aggregate;
 mod auth;
+mod me;
 mod tokens;
 
 use std::process::ExitCode;
@@ -117,9 +118,20 @@ async fn main() -> ExitCode {
         router = router.merge(resp.router());
     }
 
-    // Token-auth layer applied to all /v1/* routes registered above.
-    let auth_layer = auth::token_auth_layer(token_registry.clone());
-    router = router.layer(axum::middleware::from_fn(auth_layer));
+    // Layers on /v1/* — outer is added LAST, so this stack is:
+    //   request → token_auth → quota → handler
+    let token_layer = auth::token_auth_layer(token_registry.clone());
+    let quota = auth::quota_layer(
+        token_registry.clone(),
+        std::path::PathBuf::from(&usage_log_path),
+    );
+    router = router
+        .layer(axum::middleware::from_fn(quota))
+        .layer(axum::middleware::from_fn(token_layer));
+
+    // /me routes — same token middleware applied internally by MeServer
+    let me_server = me::MeServer::new(usage_log_path.clone(), token_registry.clone());
+    router = router.merge(me_server.router());
 
     // /admin routes (HTTP Basic).
     let admin_server =
