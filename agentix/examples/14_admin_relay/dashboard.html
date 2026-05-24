@@ -31,7 +31,7 @@
 
     <!-- ── Overview tab ─────────────────────────────────────────── -->
     <div data-tab-pane="overview" class="space-y-6">
-      <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <section class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <div class="bg-white rounded-lg border border-neutral-200 p-4">
           <div class="text-xs uppercase tracking-wide text-neutral-500">Requests</div>
           <div class="mt-1 text-2xl num font-semibold" id="tile-requests">—</div>
@@ -47,6 +47,14 @@
         <div class="bg-white rounded-lg border border-neutral-200 p-4">
           <div class="text-xs uppercase tracking-wide text-neutral-500">Output tokens</div>
           <div class="mt-1 text-2xl num font-semibold" id="tile-output">—</div>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Cache tokens (w/r)</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-cache">—</div>
+        </div>
+        <div class="bg-white rounded-lg border border-neutral-200 p-4">
+          <div class="text-xs uppercase tracking-wide text-neutral-500">Est. cost</div>
+          <div class="mt-1 text-2xl num font-semibold" id="tile-cost">—</div>
         </div>
       </section>
 
@@ -68,6 +76,8 @@
                 <th class="py-2 num text-right">Requests</th>
                 <th class="py-2 num text-right">Input</th>
                 <th class="py-2 num text-right">Output</th>
+                <th class="py-2 num text-right">Cache w/r</th>
+                <th class="py-2 num text-right">Cost</th>
                 <th class="py-2 num text-right">Errors</th>
                 <th class="py-2">Last seen</th>
               </tr>
@@ -93,6 +103,8 @@
                 <th class="py-2">Model → upstream</th>
                 <th class="py-2 num text-right">In</th>
                 <th class="py-2 num text-right">Out</th>
+                <th class="py-2 num text-right">Cache w/r</th>
+                <th class="py-2 num text-right">Cost</th>
                 <th class="py-2 num text-right">ms</th>
                 <th class="py-2">Status</th>
               </tr>
@@ -187,6 +199,8 @@
 
 <script>
 const fmt = new Intl.NumberFormat('en-US');
+// Sub-cent costs are common (cache reads are cheap), so show 4 decimals.
+const usd = n => '$' + (Number(n) || 0).toFixed(4);
 let dayChart, modelChart;
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -240,6 +254,9 @@ async function loadOverview() {
   document.getElementById('tile-errors').textContent   = fmt.format(d.overall.errors);
   document.getElementById('tile-input').textContent    = fmt.format(d.overall.input_tokens);
   document.getElementById('tile-output').textContent   = fmt.format(d.overall.output_tokens);
+  document.getElementById('tile-cache').textContent    =
+    fmt.format(d.overall.cache_creation_tokens) + ' / ' + fmt.format(d.overall.cache_read_tokens);
+  document.getElementById('tile-cost').textContent     = usd(d.overall.total_usd);
 
   renderDayChart(d.per_day);
   renderModelChart(d.per_model);
@@ -254,6 +271,8 @@ async function loadOverview() {
       <td class="py-2 num text-right">${fmt.format(u.requests)}</td>
       <td class="py-2 num text-right">${fmt.format(u.input_tokens)}</td>
       <td class="py-2 num text-right">${fmt.format(u.output_tokens)}</td>
+      <td class="py-2 num text-right text-neutral-500">${fmt.format(u.cache_creation_tokens)} / ${fmt.format(u.cache_read_tokens)}</td>
+      <td class="py-2 num text-right">${usd(u.total_usd)}</td>
       <td class="py-2 num text-right ${u.errors > 0 ? 'text-red-700' : 'text-neutral-400'}">${fmt.format(u.errors)}</td>
       <td class="py-2 text-neutral-500">${escapeHtml(u.last_seen)}</td>`;
     ub.appendChild(tr);
@@ -272,6 +291,8 @@ async function loadOverview() {
       <td class="py-2"><span class="text-neutral-500">${escapeHtml(r.model)}</span> → ${escapeHtml(upstream)}</td>
       <td class="py-2 num text-right">${fmt.format(r.input_tokens)}</td>
       <td class="py-2 num text-right">${fmt.format(r.output_tokens)}</td>
+      <td class="py-2 num text-right text-neutral-500">${fmt.format(r.cache_creation_tokens)} / ${fmt.format(r.cache_read_tokens)}</td>
+      <td class="py-2 num text-right">${usd(r.cost_usd)}</td>
       <td class="py-2 num text-right text-neutral-500">${fmt.format(r.duration_ms)}</td>
       <td class="py-2"><span class="${r.status === 'ok' ? 'text-emerald-700' : 'text-red-700'}">${escapeHtml(r.status)}</span></td>`;
     rb.appendChild(tr);
@@ -437,11 +458,12 @@ function renderFallbackRow(fb) {
   const row = document.createElement('div');
   row.className = 'grid grid-cols-12 gap-1.5 items-center';
   row.innerHTML = `
-    <input data-fb="target"    class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="claude-code | deepseek | https://..." value="${escapeHtml(fb.target || '')}" />
-    <input data-fb="model"     class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="model (optional)" value="${escapeHtml(fb.model || '')}" />
-    <input data-fb="token_env" class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="token env (optional)" value="${escapeHtml(fb.token_env || '')}" />
-    <input data-fb="base_url"  class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="base_url" value="${escapeHtml(fb.base_url || '')}" />
-    <button data-fb="remove"   class="col-span-1 text-xs text-red-700">✕</button>`;
+    <input data-fb="target"        class="col-span-3 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="claude-code | deepseek | https://..." value="${escapeHtml(fb.target || '')}" />
+    <input data-fb="model"         class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="model" value="${escapeHtml(fb.model || '')}" />
+    <input data-fb="pricing_model" class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="pricing id (openrouter)" value="${escapeHtml(fb.pricing_model || '')}" />
+    <input data-fb="token_env"     class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="token env" value="${escapeHtml(fb.token_env || '')}" />
+    <input data-fb="base_url"      class="col-span-2 font-mono text-xs border border-neutral-300 rounded px-2 py-1" placeholder="base_url" value="${escapeHtml(fb.base_url || '')}" />
+    <button data-fb="remove"       class="col-span-1 text-xs text-red-700">✕</button>`;
   row.querySelector('[data-fb="remove"]').addEventListener('click', () => row.remove());
   return row;
 }
@@ -451,9 +473,10 @@ function harvestRoute(card) {
   const fbs = [...card.querySelectorAll('[data-field="fallbacks"] > div')].map(row => {
     const get = k => row.querySelector(`[data-fb="${k}"]`).value.trim() || null;
     const fb = { target: get('target') };
-    if (get('model'))     fb.model = get('model');
-    if (get('token_env')) fb.token_env = get('token_env');
-    if (get('base_url'))  fb.base_url = get('base_url');
+    if (get('model'))         fb.model = get('model');
+    if (get('pricing_model')) fb.pricing_model = get('pricing_model');
+    if (get('token_env'))     fb.token_env = get('token_env');
+    if (get('base_url'))      fb.base_url = get('base_url');
     return fb;
   });
   return { match: matchVal, fallback: fbs };
@@ -480,9 +503,10 @@ document.getElementById('save-route').addEventListener('click', async () => {
   const fbs = [...card.querySelectorAll('#new-route-fallbacks > div')].map(row => {
     const get = k => row.querySelector(`[data-fb="${k}"]`).value.trim() || null;
     const fb = { target: get('target') };
-    if (get('model'))     fb.model = get('model');
-    if (get('token_env')) fb.token_env = get('token_env');
-    if (get('base_url'))  fb.base_url = get('base_url');
+    if (get('model'))         fb.model = get('model');
+    if (get('pricing_model')) fb.pricing_model = get('pricing_model');
+    if (get('token_env'))     fb.token_env = get('token_env');
+    if (get('base_url'))      fb.base_url = get('base_url');
     return fb;
   });
   if (!fbs.length || !fbs[0].target) { alert('at least one upstream with target required'); return; }

@@ -69,6 +69,11 @@ pub struct LoggedRecord {
     pub error: Option<String>,
     #[serde(default)]
     pub streaming: bool,
+    /// Computed at aggregation time from the price book — never read from the
+    /// log. `#[serde(default)]` keeps deserialization happy; the field only
+    /// appears on the way out, in the dashboard / `/me` JSON.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -80,10 +85,15 @@ pub struct Totals {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub reasoning_tokens: u64,
+    /// Summed request cost in USD, priced via [`crate::pricing`]. Zero when no
+    /// `pricing_model` is configured or the model isn't in the price book.
+    pub total_usd: f64,
 }
 
 impl Totals {
-    pub fn add(&mut self, r: &LoggedRecord) {
+    /// `cost_usd` is the price of this single record, computed once by the
+    /// caller's pricer and folded into every bucket it belongs to.
+    pub fn add(&mut self, r: &LoggedRecord, cost_usd: f64) {
         self.requests += 1;
         if r.status != "ok" {
             self.errors += 1;
@@ -93,6 +103,7 @@ impl Totals {
         self.cache_read_tokens += r.cache_read_tokens;
         self.cache_creation_tokens += r.cache_creation_tokens;
         self.reasoning_tokens += r.reasoning_tokens;
+        self.total_usd += cost_usd;
     }
 }
 
@@ -132,7 +143,13 @@ pub struct DashboardData {
 
 /// Read the entire log into memory and roll up. `recent_n` controls how many
 /// of the most-recent records to keep in `recent` (rest are aggregated only).
-pub fn aggregate(path: impl AsRef<Path>, recent_n: usize) -> std::io::Result<DashboardData> {
+/// `pricer` returns the USD cost of one record; pass `&|_| 0.0` to disable
+/// costing. It's called exactly once per record and folded into every bucket.
+pub fn aggregate(
+    path: impl AsRef<Path>,
+    recent_n: usize,
+    pricer: &dyn Fn(&LoggedRecord) -> f64,
+) -> std::io::Result<DashboardData> {
     let body = std::fs::read_to_string(path.as_ref()).unwrap_or_default();
 
     let mut overall = Totals::default();
@@ -146,12 +163,14 @@ pub fn aggregate(path: impl AsRef<Path>, recent_n: usize) -> std::io::Result<Das
         if line.is_empty() {
             continue;
         }
-        let rec: LoggedRecord = match serde_json::from_str(line) {
+        let mut rec: LoggedRecord = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(_) => continue, // skip malformed lines
         };
 
-        overall.add(&rec);
+        let cost = pricer(&rec);
+        rec.cost_usd = cost;
+        overall.add(&rec, cost);
 
         // Per-user bucket (falls back to auth_token, or "anonymous").
         let user_key = rec
@@ -160,7 +179,7 @@ pub fn aggregate(path: impl AsRef<Path>, recent_n: usize) -> std::io::Result<Das
             .or_else(|| rec.auth_token.clone())
             .unwrap_or_else(|| "anonymous".to_string());
         let entry = by_user.entry(user_key).or_default();
-        entry.0.add(&rec);
+        entry.0.add(&rec, cost);
         if entry.1.is_empty() || rec.ts > entry.1 {
             entry.1 = rec.ts.clone();
         }
@@ -168,7 +187,7 @@ pub fn aggregate(path: impl AsRef<Path>, recent_n: usize) -> std::io::Result<Das
         // Per-day bucket — keyed on date prefix `YYYY-MM-DD`.
         let day = rec.ts.get(..10).unwrap_or("").to_string();
         if !day.is_empty() {
-            by_day.entry(day).or_default().add(&rec);
+            by_day.entry(day).or_default().add(&rec, cost);
         }
 
         // Per-model bucket.
@@ -177,7 +196,7 @@ pub fn aggregate(path: impl AsRef<Path>, recent_n: usize) -> std::io::Result<Das
             (Some(p), None) => p.clone(),
             _ => "unattributed".to_string(),
         };
-        by_model.entry(model_key).or_default().add(&rec);
+        by_model.entry(model_key).or_default().add(&rec, cost);
 
         all.push(rec);
     }
@@ -246,6 +265,7 @@ pub fn user_month_summary(
     user: &str,
     recent_n: usize,
     monthly_token_budget: Option<u64>,
+    pricer: &dyn Fn(&LoggedRecord) -> f64,
 ) -> std::io::Result<UserMonthSummary> {
     let body = std::fs::read_to_string(path.as_ref()).unwrap_or_default();
     let month = current_month_prefix();
@@ -260,7 +280,7 @@ pub fn user_month_summary(
         if line.is_empty() {
             continue;
         }
-        let rec: LoggedRecord = match serde_json::from_str(line) {
+        let mut rec: LoggedRecord = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -271,17 +291,19 @@ pub fn user_month_summary(
             continue;
         }
 
-        totals.add(&rec);
+        let cost = pricer(&rec);
+        rec.cost_usd = cost;
+        totals.add(&rec, cost);
         let day = rec.ts.get(..10).unwrap_or("").to_string();
         if !day.is_empty() {
-            by_day.entry(day).or_default().add(&rec);
+            by_day.entry(day).or_default().add(&rec, cost);
         }
         let model_key = match (&rec.upstream_provider, &rec.upstream_model) {
             (Some(p), Some(m)) => format!("{p}/{m}"),
             (Some(p), None) => p.clone(),
             _ => "unattributed".to_string(),
         };
-        by_model.entry(model_key).or_default().add(&rec);
+        by_model.entry(model_key).or_default().add(&rec, cost);
         all.push(rec);
     }
 
@@ -371,7 +393,7 @@ mod tests {
             json!({"ts":"2026-05-22T11:00:00Z","user":"bob","auth_token":"b","wire_format":"openai_chat","model":"sonnet","upstream_provider":"ClaudeCode","upstream_model":"sonnet","input_tokens":200,"output_tokens":100,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_tokens":0,"duration_ms":2000,"status":"ok","streaming":true}),
             json!({"ts":"2026-05-23T09:00:00Z","user":"alice","auth_token":"a","wire_format":"openai_responses","model":"sonnet","upstream_provider":"DeepSeek","upstream_model":"deepseek-chat","input_tokens":50,"output_tokens":25,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_tokens":0,"duration_ms":500,"status":"error","error":"upstream 503","streaming":false}),
         ]);
-        let data = aggregate(&path, 100).unwrap();
+        let data = aggregate(&path, 100, &|_| 0.0).unwrap();
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(data.overall.requests, 3);
@@ -404,7 +426,7 @@ mod tests {
         let path = write_log(&[
             json!({"ts":"2026-05-22T10:00:00Z","auth_token":"sk-x","wire_format":"anthropic","model":"sonnet","upstream_provider":"ClaudeCode","upstream_model":"sonnet","input_tokens":1,"output_tokens":1,"cache_read_tokens":0,"cache_creation_tokens":0,"reasoning_tokens":0,"duration_ms":1,"status":"ok","streaming":false}),
         ]);
-        let data = aggregate(&path, 100).unwrap();
+        let data = aggregate(&path, 100, &|_| 0.0).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(data.per_user[0].user, "sk-x");
     }
@@ -415,7 +437,7 @@ mod tests {
         let mut f = std::fs::File::create(&p).unwrap();
         writeln!(f, "not json").unwrap();
         writeln!(f, "{{invalid").unwrap();
-        let data = aggregate(&p, 100).unwrap();
+        let data = aggregate(&p, 100, &|_| 0.0).unwrap();
         let _ = std::fs::remove_file(&p);
         assert_eq!(data.overall.requests, 0);
     }

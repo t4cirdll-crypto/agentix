@@ -26,6 +26,7 @@ use serde::Deserialize;
 pub use crate::auth::{admin_basic_auth_layer, token_auth_layer};
 pub use crate::tokens::{TokenEntry, TokenRegistry};
 
+use crate::pricing::PricingHandle;
 use crate::routes::{Route, RoutesHandle};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
@@ -40,6 +41,7 @@ struct Inner {
     admin_password: String,
     tokens: TokenRegistry,
     routes: RoutesHandle,
+    pricing: PricingHandle,
 }
 
 impl AdminServer {
@@ -48,6 +50,7 @@ impl AdminServer {
         admin_password: impl Into<String>,
         tokens: TokenRegistry,
         routes: RoutesHandle,
+        pricing: PricingHandle,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -55,6 +58,7 @@ impl AdminServer {
                 admin_password: admin_password.into(),
                 tokens,
                 routes,
+                pricing,
             }),
         }
     }
@@ -83,12 +87,24 @@ impl AdminServer {
     }
 }
 
-async fn dashboard_html() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+async fn dashboard_html() -> impl IntoResponse {
+    // No-cache so browsers always pick up a freshly-deployed dashboard rather
+    // than serving a heuristically-cached older copy.
+    (
+        [(
+            axum::http::header::CACHE_CONTROL,
+            "no-cache, must-revalidate",
+        )],
+        Html(DASHBOARD_HTML),
+    )
 }
 
 async fn dashboard_api(State(server): State<AdminServer>) -> Response {
-    match crate::aggregate::aggregate(&server.inner.usage_log_path, 100) {
+    let pricer = crate::pricing::record_pricer(
+        server.inner.pricing.clone(),
+        server.inner.routes.clone(),
+    );
+    match crate::aggregate::aggregate(&server.inner.usage_log_path, 100, &pricer) {
         Ok(d) => Json(d).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to read usage log");

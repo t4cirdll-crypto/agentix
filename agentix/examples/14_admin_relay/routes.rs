@@ -45,6 +45,11 @@ pub struct UpstreamEntry {
     pub token_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Stable OpenRouter model id (e.g. `anthropic/claude-opus-4`) used ONLY
+    /// for cost attribution on the dashboard — decoupled from `target`/`model`.
+    /// Ignored by routing; see [`crate::pricing`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_model: Option<String>,
 }
 
 impl UpstreamEntry {
@@ -65,7 +70,7 @@ impl UpstreamEntry {
             if let Some(m) = &self.model {
                 spec = spec.with_model(m.clone());
             }
-            spec.pre_commit_timeout = Duration::from_secs(30);
+            spec.pre_commit_timeout = Duration::from_secs(600);
             return Ok(spec);
         }
 
@@ -94,7 +99,7 @@ impl UpstreamEntry {
         if let Some(m) = &self.model {
             spec = spec.with_model(m.clone());
         }
-        spec.pre_commit_timeout = Duration::from_secs(30);
+        spec.pre_commit_timeout = Duration::from_secs(600);
         Ok(spec)
     }
 }
@@ -183,6 +188,24 @@ impl RoutesHandle {
         let removed = all.remove(index);
         self.replace_all(all)?;
         Ok(removed)
+    }
+
+    /// Find the `pricing_model` configured for a resolved upstream model, by
+    /// scanning every route's fallback list for an entry whose `model` matches.
+    /// First match wins. Used by the dashboard to attribute cost; routing
+    /// itself never consults this.
+    pub fn pricing_model_for(&self, upstream_model: &str) -> Option<String> {
+        let routes = self.inner.read().unwrap();
+        for route in routes.iter() {
+            for fb in &route.fallback {
+                if fb.model.as_deref() == Some(upstream_model) {
+                    if let Some(pm) = &fb.pricing_model {
+                        return Some(pm.clone());
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

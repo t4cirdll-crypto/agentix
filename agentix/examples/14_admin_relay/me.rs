@@ -15,6 +15,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 
 use crate::auth;
+use crate::pricing::PricingHandle;
+use crate::routes::RoutesHandle;
 use crate::tokens::TokenRegistry;
 
 const ME_HTML: &str = include_str!("me.html");
@@ -27,14 +29,23 @@ pub struct MeServer {
 struct Inner {
     usage_log_path: PathBuf,
     tokens: TokenRegistry,
+    routes: RoutesHandle,
+    pricing: PricingHandle,
 }
 
 impl MeServer {
-    pub fn new(usage_log_path: impl Into<PathBuf>, tokens: TokenRegistry) -> Self {
+    pub fn new(
+        usage_log_path: impl Into<PathBuf>,
+        tokens: TokenRegistry,
+        routes: RoutesHandle,
+        pricing: PricingHandle,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 usage_log_path: usage_log_path.into(),
                 tokens,
+                routes,
+                pricing,
             }),
         }
     }
@@ -73,11 +84,16 @@ async fn me_usage(
         .lookup(&user.token)
         .and_then(|e| e.monthly_token_budget);
 
+    let pricer = crate::pricing::record_pricer(
+        server.inner.pricing.clone(),
+        server.inner.routes.clone(),
+    );
     match crate::aggregate::user_month_summary(
         &server.inner.usage_log_path,
         &user.user,
         50,
         budget,
+        &pricer,
     ) {
         Ok(s) => Json(s).into_response(),
         Err(e) => (

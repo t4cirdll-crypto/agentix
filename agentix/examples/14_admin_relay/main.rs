@@ -22,6 +22,9 @@
 //! #   ADMIN_PASSWORD=<pwd>
 //! #   USAGE_LOG=/var/log/aaagw/usage.jsonl
 //! #   AAAGW_CONFIG=aaagw.toml   (upstream routing)
+//! # Optional:
+//! #   PRICING_CACHE=/etc/aaagw/pricing.json  (OpenRouter price book cache;
+//! #                                           defaults to next to AAAGW_CONFIG)
 //! cargo run --example 14_admin_relay \
 //!     --features "server-anthropic,server-openai-chat,server-openai-responses,claude-code,codex" \
 //!     -- 127.0.0.1:7878
@@ -31,6 +34,7 @@ mod admin;
 mod aggregate;
 mod auth;
 mod me;
+mod pricing;
 mod routes;
 mod tokens;
 
@@ -101,6 +105,20 @@ async fn main() -> ExitCode {
         }
     };
 
+    // ── Price book (OpenRouter catalog) ───────────────────────────────
+    // Optional cache path; defaults to `pricing.json` next to AAAGW_CONFIG.
+    let pricing_cache = env_required("PRICING_CACHE").unwrap_or_else(|| {
+        std::path::Path::new(&config_path)
+            .parent()
+            .map(|d| d.join("pricing.json"))
+            .unwrap_or_else(|| std::path::PathBuf::from("pricing.json"))
+            .to_string_lossy()
+            .into_owned()
+    });
+    let pricing = pricing::PricingHandle::load(&pricing_cache).await;
+    tracing::info!(path = %pricing_cache, models = pricing.len(), "price book ready");
+    pricing.spawn_periodic_refresh();
+
     // ── Build the merged router ───────────────────────────────────────
     // Wrap the routes handle in `Arc<dyn ChainResolver>` and share across
     // all three protocol servers. Admin mutations to `routes` propagate
@@ -141,7 +159,12 @@ async fn main() -> ExitCode {
         .layer(axum::middleware::from_fn(token_layer));
 
     // /me routes — same token middleware applied internally by MeServer
-    let me_server = me::MeServer::new(usage_log_path.clone(), token_registry.clone());
+    let me_server = me::MeServer::new(
+        usage_log_path.clone(),
+        token_registry.clone(),
+        routes.clone(),
+        pricing.clone(),
+    );
     router = router.merge(me_server.router());
 
     // /admin routes (HTTP Basic).
@@ -150,6 +173,7 @@ async fn main() -> ExitCode {
         admin_password,
         token_registry,
         routes.clone(),
+        pricing,
     );
     router = router.merge(admin_server.router());
 
