@@ -1,4 +1,4 @@
-## [0.26.0] - 2026-05-14
+## [0.26.0] - 2026-05-25
 
 ### New features
 
@@ -8,6 +8,7 @@
 - **`Request::tool_choice(...)` builder** — exposes the existing public `tool_choice` field as a chainable request builder.
 - **Codex CLI upstream in `aaagw`** — `-i codex` now selects `Provider::Codex` and requires no token.
 - **Codex multi-turn example** — `examples/13_codex_agent_multiturn.rs` exercises five sequential tool calls through `agentix::agent`, verifying the restore boundary after every tool call.
+- **Admin-relay cost tracking example** — `examples/14_admin_relay` gains an OpenRouter-backed price book (catalog cached to disk, refreshed periodically) that prices each request including `cache_read` / `cache_write` / `reasoning` tokens — necessary because the claude-code upstream reports a near-constant tiny `input_tokens` and bills the real volume through the cache buckets. Routes carry an optional `pricing_model` (a stable OpenRouter id, decoupled from the upstream); the dashboard gains cost + cache(w/r) tiles and columns.
 
 ### Exactness / unsupported mappings
 
