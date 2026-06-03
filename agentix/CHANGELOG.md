@@ -1,3 +1,15 @@
+## [0.26.1] - 2026-06-03
+
+### Bug fixes
+
+- **`claude-code` provider: tool calling restored on claude CLI 2.x.** Recent claude CLI versions (verified on 2.1.161) enable dynamic tool loading ("tool search") by default, which moves MCP tools into a deferred set the model must load via the built-in `ToolSearch` tool rather than presenting them directly. Because agentix passes `--tools ""` to disable built-ins (which also removes `ToolSearch`), the model could no longer reach the loopback tools and fabricated `<tool_call>` text instead of emitting real `tool_use` blocks — breaking single- and multi-turn tool use entirely. Fixed by spawning `claude -p` with `ENABLE_TOOL_SEARCH=false`, so MCP tools are presented to the model directly. The model's tool list is now exactly the agentix-provided tools and tool calls dispatch on the first turn.
+
+### Other
+
+- **`claude-code` provider: suppress non-essential background traffic.** Spawn with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Since the provider drives `claude -p` as a single-shot LLM (`--no-session-persistence`, killed after the first assistant message), claude's background prefetches — notably a haiku session-title generation request on every turn — are pure waste; this removes them.
+
+---
+
 ## [0.26.0] - 2026-05-25
 
 ### New features

@@ -289,6 +289,19 @@ async fn start_claude(
     let mut cmd = Command::new("claude");
     cmd.args(&args)
         .env("IS_SANDBOX", "1")
+        // claude CLI 2.x enables dynamic tool loading ("tool search") by default,
+        // which moves MCP tools into a deferred set the model must load via the
+        // built-in `ToolSearch` tool instead of presenting them directly. Combined
+        // with our `--tools ""` (which disables built-ins, including ToolSearch),
+        // the model can't reach the loopback tools at all and fabricates
+        // `<tool_call>` text instead of emitting real `tool_use` blocks. Forcing
+        // this off presents the MCP tools to the model directly, as agentix expects.
+        .env("ENABLE_TOOL_SEARCH", "false")
+        // We drive `claude -p` as a single-shot LLM (`--no-session-persistence`,
+        // killed after the first assistant message), so its background "non-essential"
+        // traffic — notably a haiku session-title prefetch on every turn — is pure
+        // waste. Suppress it.
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
