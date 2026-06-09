@@ -10,8 +10,6 @@ pub struct AgentConfig {
     pub model: String,
     /// Optional system prompt prepended to every request.
     pub system_prompt: Option<String>,
-    /// Dynamic runtime context appended after the stable conversation prefix.
-    pub reminder: Option<String>,
     /// Maximum tokens to generate. `None` = provider default.
     pub max_tokens: Option<u32>,
     /// Sampling temperature. `None` = provider default.
@@ -36,7 +34,6 @@ impl Default for AgentConfig {
             base_url: String::new(),
             model: String::new(),
             system_prompt: None,
-            reminder: None,
             max_tokens: None,
             temperature: None,
             reasoning_effort: None,

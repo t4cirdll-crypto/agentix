@@ -272,8 +272,6 @@ pub(crate) fn build_mimo_request(
         });
     }
 
-    append_reminder(&mut out_messages, config.reminder.as_deref());
-
     let mimo_tools: Option<Vec<Tool>> = if tools.is_empty() {
         None
     } else {
@@ -371,29 +369,6 @@ fn user_content_from_parts(parts: Vec<UserContent>) -> MessageContent {
     MessageContent::Blocks(blocks)
 }
 
-fn append_reminder(messages: &mut Vec<RequestMessage>, reminder: Option<&str>) {
-    let Some(reminder) = reminder.filter(|s| !s.is_empty()) else {
-        return;
-    };
-    let block = ContentBlock::Text {
-        text: reminder.to_string(),
-    };
-    if let Some(msg) = messages.last_mut().filter(|msg| msg.role == "user") {
-        match &mut msg.content {
-            MessageContent::Text(text) => {
-                msg.content =
-                    MessageContent::Blocks(vec![ContentBlock::Text { text: text.clone() }, block]);
-            }
-            MessageContent::Blocks(blocks) => blocks.push(block),
-        }
-    } else {
-        messages.push(RequestMessage {
-            role: "user",
-            content: MessageContent::Blocks(vec![block]),
-        });
-    }
-}
-
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -447,8 +422,7 @@ mod tests {
     fn no_cache_control_anywhere() {
         // Mimo's spec doesn't document cache_control on input. Make sure
         // we don't sneak one in via system, user, or tool_result.
-        let mut config = cfg("S");
-        config.reminder = Some("R".into());
+        let config = cfg("S");
         let msgs = vec![Message::User(vec![Content::text("Hello")])];
         let req = build_mimo_request(&config, &msgs, &[], false);
         let s = serde_json::to_string(&req).unwrap();
@@ -554,18 +528,5 @@ mod tests {
         assert_eq!(doc["source"]["type"], "base64");
         assert_eq!(doc["source"]["media_type"], "application/pdf");
         assert_eq!(doc["source"]["data"], "UERGZmFrZQ==");
-    }
-
-    #[test]
-    fn reminder_appended_to_last_user_message() {
-        let mut config = cfg("S");
-        config.reminder = Some("<runtime_context>plan</runtime_context>".into());
-        let msgs = vec![Message::User(vec![Content::text("Actual user")])];
-        let req = build_mimo_request(&config, &msgs, &[], false);
-        let json = serde_json::to_value(&req).unwrap();
-        let messages = json["messages"].as_array().unwrap();
-        let blocks = messages[0]["content"].as_array().unwrap();
-        assert_eq!(blocks[0]["text"], "Actual user");
-        assert_eq!(blocks[1]["text"], "<runtime_context>plan</runtime_context>");
     }
 }

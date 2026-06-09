@@ -247,13 +247,6 @@ pub(crate) fn build_responses_request(
         }
     }
 
-    if let Some(reminder) = config.reminder.as_deref().filter(|s| !s.is_empty()) {
-        input.push(InputItem::Typed(TypedItem::Message {
-            role: "user",
-            content: MessageContent::Text(reminder.to_string()),
-        }));
-    }
-
     let tools_opt = if tools.is_empty() {
         None
     } else {

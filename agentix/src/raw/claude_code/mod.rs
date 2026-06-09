@@ -62,25 +62,6 @@ fn ensure_toolu_id(id: &str, id_map: &mut HashMap<String, String>) -> String {
     mapped
 }
 
-fn append_reminder_content(content: &mut serde_json::Value, reminder: Option<&str>) {
-    let Some(reminder) = reminder.filter(|s| !s.is_empty()) else {
-        return;
-    };
-    let block = serde_json::json!({"type": "text", "text": reminder});
-    match content {
-        serde_json::Value::String(text) => {
-            *content = serde_json::Value::Array(vec![
-                serde_json::json!({"type": "text", "text": text.clone()}),
-                block,
-            ]);
-        }
-        serde_json::Value::Array(blocks) => blocks.push(block),
-        _ => {
-            *content = serde_json::Value::Array(vec![block]);
-        }
-    }
-}
-
 fn assistant_replay_message(
     assistant: Message,
     session_id: Option<&str>,
@@ -201,11 +182,10 @@ impl Tool for StubTools {
 struct Started {
     guard: Cleanup,
     child: Child,
-    /// `Some` on the tool-loop replay path: yields the genuine (passed-through)
-    /// turn's Anthropic SSE bytes, teed by the intercepting proxy. When present,
-    /// the caller parses *this* for the turn's output and usage, ignoring the
-    /// CLI's stdout (which carries the faked replay turns too).
-    real_rx: Option<tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>>,
+    /// `Some(n)` on the tool-loop replay path: the genuine turn is the turn
+    /// after `n` faked replay turns on the CLI's own stdout, so the caller
+    /// parses stdout and skips that many `message_stop`s to reach it.
+    skip_turns: Option<usize>,
 }
 
 /// The replay plan for a tool-loop turn: resume up to the last settled user
@@ -287,7 +267,7 @@ async fn start_claude(
     let mut stdin_prefix: Vec<serde_json::Value> = Vec::new();
     let mut tail_is_tool_result = false;
     let last_user_content: serde_json::Value;
-    let mut real_rx = None;
+    let mut skip_turns: Option<usize> = None;
     // (proxy listener addr, CA cert temp path) — set on the replay path.
     let mut proxy_env: Option<(std::net::SocketAddr, std::path::PathBuf)> = None;
 
@@ -306,7 +286,8 @@ async fn start_claude(
             session_id = Some(sid);
         }
 
-        let handle = proxy::spawn_proxy(plan.state, config.reminder.clone())
+        let skip = plan.state.fake_count();
+        let handle = proxy::spawn_proxy(plan.state)
             .await
             .map_err(|e| ApiError::Other(format!("spawn replay proxy: {e}")))?;
         guard.proxy_task = Some(handle.task);
@@ -317,7 +298,7 @@ async fn start_claude(
             .map_err(|e| ApiError::Other(format!("write replay CA: {e}")))?;
         guard.temp_files.push(ca_path.clone());
         proxy_env = Some((handle.addr, ca_path));
-        real_rx = Some(handle.real_rx);
+        skip_turns = Some(skip);
     } else {
         // ── Single-shot path (fresh user turn / degenerate histories) ─────
         let (mut prev_history, mut content) =
@@ -350,11 +331,6 @@ async fn start_claude(
             self::session::remap_tool_use_ids(&mut content, &id_map);
             stdin_prefix.push(msg);
         }
-        // Dynamic reminder rides the (last) stdin message on this path. On the
-        // replay path it must instead land on the *last* message of the real
-        // request (injected by the proxy), never on the mid-prefix trigger
-        // user — otherwise a changing reminder would re-break the cache.
-        append_reminder_content(&mut content, config.reminder.as_deref());
         last_user_content = content;
     }
 
@@ -488,7 +464,7 @@ async fn start_claude(
     Ok(Started {
         guard,
         child,
-        real_rx,
+        skip_turns,
     })
 }
 
@@ -705,23 +681,7 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
     out
 }
 
-// ── Replay path: parse the proxy-teed genuine-turn SSE ──────────────────────
-
-/// Pull the recorded data line(s) out of one SSE event block.
-fn sse_data(block: &str) -> Option<String> {
-    let mut data = String::new();
-    let mut has = false;
-    for line in block.lines() {
-        if let Some(rest) = line.strip_prefix("data:") {
-            if has {
-                data.push('\n');
-            }
-            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-            has = true;
-        }
-    }
-    has.then_some(data)
-}
+// ── Replay path: parse the genuine turn from the CLI's stdout ───────────────
 
 /// Fold a usage snapshot into the accumulator. Anthropic splits usage across
 /// `message_start` (input + cache counts) and `message_delta` (final output),
@@ -755,65 +715,62 @@ fn strip_event_prefix(ev: LlmEvent) -> LlmEvent {
     }
 }
 
-/// Drive the replay turn: drain the CLI's stdout to keep it unblocked and parse
-/// the genuine Anthropic SSE teed by the proxy into `LlmEvent`s (reusing the
-/// Anthropic provider's stream parser).
+/// Drive the replay turn by parsing the CLI's own stdout. The CLI emits one
+/// `stream_event` per Anthropic SSE event (already decompressed by the CLI);
+/// the first `skip_turns` turns are the replayed history and the next turn is
+/// the genuine passthrough generation — we parse that one for output + real
+/// cache usage, without ever intercepting the upstream's bytes or touching the
+/// request.
 fn proxy_event_stream(
     guard: Cleanup,
     mut child: Child,
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>,
+    skip_turns: usize,
 ) -> BoxStream<'static, LlmEvent> {
     use crate::raw::anthropic::response::StreamEvent as AStreamEvent;
     use crate::raw::anthropic::{BlockBuild, assistant_state_from_blocks, finalize, parse_stream_event};
     use crate::types::StreamBufs;
 
-    let cc_debug = std::env::var("AGENTIX_CC_DEBUG").is_ok();
     stream! {
         let guard = guard;
-        // Drain the CLI's stdout (it carries the faked replay turns too) so its
-        // pipe never blocks while we read the real turn from the proxy tee.
-        if let Some(out) = child.stdout.take() {
-            tokio::spawn(async move {
-                let mut l = BufReader::new(out).lines();
-                while let Ok(Some(_)) = l.next_line().await {}
-            });
-        }
+        let Some(out) = child.stdout.take() else {
+            yield LlmEvent::Error("claude stdout unavailable".into());
+            return;
+        };
+        let mut lines = BufReader::new(out).lines();
 
         let mut bufs = StreamBufs::new();
         let mut blocks: Vec<Option<BlockBuild>> = Vec::new();
         let mut acc_usage = UsageStats::default();
         let mut usage_seen = false;
-        let mut sse_buf = String::new();
+        let mut done_turns = 0usize;
         let mut saw_stop = false;
-        let mut terminal = false;
 
         loop {
             tokio::select! {
-                chunk = rx.recv() => {
-                    let Some(bytes) = chunk else {
-                        if !saw_stop {
-                            yield LlmEvent::Error("replay proxy closed before message_stop".into());
-                            terminal = true;
-                        }
-                        break;
+                line = lines.next_line() => {
+                    let Ok(Some(line)) = line else { break };
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+                    if v.get("type").and_then(|t| t.as_str()) != Some("stream_event") {
+                        continue;
+                    }
+                    let Some(event) = v.get("event") else { continue };
+                    let Ok(ev) = serde_json::from_value::<AStreamEvent>(event.clone()) else {
+                        continue;
                     };
-                    sse_buf.push_str(&String::from_utf8_lossy(&bytes));
-                    while let Some(pos) = sse_buf.find("\n\n") {
-                        let block: String = sse_buf.drain(..pos + 2).collect();
-                        let Some(data) = sse_data(&block) else { continue };
-                        if cc_debug { eprintln!("[cc-proxy-sse] {data}"); }
-                        if data == "[DONE]" { continue; }
-                        match serde_json::from_str::<AStreamEvent>(&data) {
-                            Ok(ev) => {
-                                if matches!(ev, AStreamEvent::MessageStop) { saw_stop = true; }
-                                for lev in parse_stream_event(ev, &mut bufs, &mut blocks) {
-                                    match lev {
-                                        LlmEvent::Usage(u) => { usage_seen = true; merge_usage(&mut acc_usage, u); }
-                                        other => yield strip_event_prefix(other),
-                                    }
-                                }
-                            }
-                            Err(e) => warn!(data = %data, error = %e, "replay sse parse failed"),
+                    let is_stop = matches!(ev, AStreamEvent::MessageStop);
+
+                    if done_turns < skip_turns {
+                        // Still replaying faked history; only track turn boundaries.
+                        if is_stop { done_turns += 1; }
+                        continue;
+                    }
+
+                    // The genuine passthrough turn.
+                    if is_stop { saw_stop = true; }
+                    for lev in parse_stream_event(ev, &mut bufs, &mut blocks) {
+                        match lev {
+                            LlmEvent::Usage(u) => { usage_seen = true; merge_usage(&mut acc_usage, u); }
+                            other => yield strip_event_prefix(other),
                         }
                     }
                     if saw_stop { break; }
@@ -824,7 +781,6 @@ fn proxy_event_stream(
                             Ok(s) => yield LlmEvent::Error(format!("claude exited before real turn completed ({s})")),
                             Err(e) => yield LlmEvent::Error(format!("wait claude: {e}")),
                         }
-                        terminal = true;
                     }
                     break;
                 }
@@ -842,8 +798,6 @@ fn proxy_event_stream(
                 yield LlmEvent::AssistantState(state);
             }
             yield LlmEvent::Done;
-        } else if !terminal {
-            yield LlmEvent::Error("replay ended unexpectedly".into());
         }
 
         drop(child);
@@ -864,13 +818,13 @@ pub(crate) async fn stream_claude_code(
     let Started {
         guard,
         mut child,
-        real_rx,
+        skip_turns,
     } = start_claude(config, messages, tools).await?;
 
-    // Replay (tool-loop) path: the genuine turn comes back through the proxy
-    // tee, not the CLI's stdout — parse that for output + real cache usage.
-    if let Some(rx) = real_rx {
-        return Ok(proxy_event_stream(guard, child, rx).boxed());
+    // Replay (tool-loop) path: the genuine turn is on the CLI's own stdout
+    // after the faked replay turns — parse that, no wire interception.
+    if let Some(skip) = skip_turns {
+        return Ok(proxy_event_stream(guard, child, skip).boxed());
     }
 
     let stdout = child

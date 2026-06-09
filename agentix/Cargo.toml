@@ -38,6 +38,9 @@ claude-code = [
     "dep:hudsucker",
     "dep:http-body-util",
     "dep:bytes",
+    "dep:tower-service",
+    "dep:webpki-roots",
+    "dep:tokio-rustls",
 ]
 codex = []
 server-anthropic = ["dep:axum"]
@@ -92,6 +95,9 @@ rcgen = { version = "0.13", optional = true }
 hudsucker = { version = "0.23", optional = true, default-features = false, features = ["rcgen-ca", "rustls-client"] }
 http-body-util = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
+tower-service = { version = "0.3", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+tokio-rustls = { version = "0.26", optional = true }
 
 # Optional: tracing subscriber for the CLI binary
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }

@@ -227,7 +227,6 @@ pub(crate) fn build_openrouter_request(
     }
 
     stamp_cache_breakpoints(&mut messages);
-    append_reminder(&mut messages, config.reminder.as_deref());
 
     let tools_opt = if tools.is_empty() {
         None
@@ -364,34 +363,6 @@ fn stamp_cache(content: &mut MessageContent) {
                 set_cache_control(last);
             }
         }
-    }
-}
-
-fn append_reminder(messages: &mut Vec<OaiMessage>, reminder: Option<&str>) {
-    let Some(reminder) = reminder.filter(|s| !s.is_empty()) else {
-        return;
-    };
-    let part = ContentPart::Text {
-        text: reminder.to_string(),
-        cache_control: None,
-    };
-    if let Some(OaiMessage::User { content }) = messages.last_mut() {
-        match content {
-            MessageContent::Text(text) => {
-                *content = MessageContent::Parts(vec![
-                    ContentPart::Text {
-                        text: text.clone(),
-                        cache_control: None,
-                    },
-                    part,
-                ]);
-            }
-            MessageContent::Parts(parts) => parts.push(part),
-        }
-    } else {
-        messages.push(OaiMessage::User {
-            content: MessageContent::Parts(vec![part]),
-        });
     }
 }
 

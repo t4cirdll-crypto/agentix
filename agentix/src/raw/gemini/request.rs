@@ -295,13 +295,6 @@ pub(crate) fn build_gemini_request(
             parts: pending_fn_responses,
         });
     }
-    if let Some(reminder) = config.reminder.as_deref().filter(|s| !s.is_empty()) {
-        contents.push(Content {
-            role: "user",
-            parts: vec![Part::Text(reminder.to_string())],
-        });
-    }
-
     let gemini_tools = if tools.is_empty() {
         None
     } else {

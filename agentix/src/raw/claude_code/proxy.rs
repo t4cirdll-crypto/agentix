@@ -7,11 +7,15 @@
 //! each model call the proxy consults [`ReplayState`]:
 //!
 //! - recorded step → answer with the recorded assistant turn (faked SSE),
-//! - first call past the recorded steps → pass through to Anthropic for the one
-//!   real generation, teeing the response bytes back to the provider so it can
-//!   parse the genuine output and (crucially) the real cache-usage numbers,
+//! - first call past the recorded steps → pass through to Anthropic **untouched**
+//!   for the one real generation,
 //! - anything after that → a no-op `end_turn` so the CLI's loop stops without
 //!   another paid upstream call.
+//!
+//! The genuine turn's output and real cache-usage numbers are read from the
+//! CLI's own stdout (it decompresses and re-emits each Anthropic SSE event as a
+//! `stream_event`), so the proxy never reads, decodes, or rewrites the upstream
+//! traffic — it only fakes the recorded steps and halts.
 //!
 //! All the CONNECT/TLS-MITM/cert-minting plumbing comes from `hudsucker`; this
 //! module only supplies the replay handler and CA bootstrap.
@@ -20,15 +24,26 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::TryStreamExt;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hudsucker::certificate_authority::RcgenAuthority;
-use hudsucker::hyper::header::{CONTENT_LENGTH, HeaderValue};
 use hudsucker::hyper::{Method, Request, Response, StatusCode};
 use hudsucker::{Body, HttpContext, HttpHandler, Proxy, RequestOrResponse};
-use serde_json::Value;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use hudsucker::hyper::Uri;
+use hudsucker::hyper::rt::{Read, ReadBufCursor, Write};
+use hudsucker::hyper_util::client::legacy::Client;
+use hudsucker::hyper_util::client::legacy::connect::{Connected, Connection};
+use hudsucker::hyper_util::rt::{TokioExecutor, TokioIo};
+use hudsucker::rustls::pki_types::ServerName;
+use hudsucker::rustls::{ClientConfig, RootCertStore};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 
 use super::replay::{ReplayState, TurnAction};
 
@@ -36,15 +51,6 @@ use super::replay::{ReplayState, TurnAction};
 #[derive(Clone)]
 struct ReplayHandler {
     state: Arc<ReplayState>,
-    /// Tee for the one real (passed-through) response body.
-    tee: mpsc::UnboundedSender<Bytes>,
-    /// Dynamic per-request reminder to append to the *last* message of the real
-    /// request (so it never lands mid-prefix and breaks the cache).
-    reminder: Option<String>,
-    /// Set when the current request was passed through, so the matching
-    /// response gets teed. Per request/response pair (hudsucker hands both to
-    /// the same handler instance).
-    armed: bool,
 }
 
 impl HttpHandler for ReplayHandler {
@@ -53,93 +59,18 @@ impl HttpHandler for ReplayHandler {
             req.method() == Method::POST && req.uri().path().ends_with("/v1/messages");
         if is_messages {
             match self.state.next_action() {
+                // Faked history turn, or the no-op halt: answer locally.
                 TurnAction::Fake(sse) | TurnAction::Halt(sse) => {
                     return sse_response(sse).into();
                 }
-                TurnAction::Passthrough => {
-                    self.armed = true;
-                    if let Some(reminder) = self.reminder.as_deref().filter(|r| !r.is_empty()) {
-                        return inject_reminder(req, reminder).await;
-                    }
-                }
+                // The genuine turn: pass through untouched. The CLI's own
+                // stdout carries the result, so we neither read nor alter the
+                // upstream traffic here (no tee, no request tampering).
+                TurnAction::Passthrough => {}
             }
         }
         req.into()
     }
-
-    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
-        if !self.armed {
-            return res;
-        }
-        self.armed = false;
-        let (parts, body) = res.into_parts();
-        let tee = self.tee.clone();
-        let stream = body
-            .into_data_stream()
-            .inspect_ok(move |chunk| {
-                let _ = tee.send(chunk.clone());
-            });
-        Response::from_parts(parts, Body::from_stream(stream))
-    }
-}
-
-/// Append the reminder as a trailing `text` block on the last message of the
-/// real request body, placing it at the very end of the prompt (after the
-/// latest tool_result) so the cached prefix is preserved. Fully guarded: any
-/// parse/shape surprise forwards the original bytes unchanged so the genuine
-/// generation never breaks, just loses the reminder.
-async fn inject_reminder(req: Request<Body>, reminder: &str) -> RequestOrResponse {
-    let (mut parts, body) = req.into_parts();
-    let Ok(collected) = body.collect().await else {
-        // Body already consumed/errored; nothing safe to forward.
-        return Request::from_parts(parts, Body::empty()).into();
-    };
-    let bytes = collected.to_bytes();
-
-    let forward = |parts: hudsucker::hyper::http::request::Parts, raw: Bytes| -> RequestOrResponse {
-        Request::from_parts(parts, Body::from(Full::new(raw))).into()
-    };
-
-    let Ok(mut json) = serde_json::from_slice::<Value>(&bytes) else {
-        return forward(parts, bytes);
-    };
-    let appended = json
-        .get_mut("messages")
-        .and_then(Value::as_array_mut)
-        .and_then(|msgs| msgs.last_mut())
-        .map(|last| append_text_block(last, reminder))
-        .unwrap_or(false);
-    if !appended {
-        return forward(parts, bytes);
-    }
-    let Ok(new_bytes) = serde_json::to_vec(&json) else {
-        return forward(parts, bytes);
-    };
-    if let Ok(len) = HeaderValue::from_str(&new_bytes.len().to_string()) {
-        parts.headers.insert(CONTENT_LENGTH, len);
-    }
-    forward(parts, Bytes::from(new_bytes))
-}
-
-/// Append a `text` content block carrying `reminder` to a message value whose
-/// `content` is either a string or an array of blocks. Returns whether it was
-/// applied.
-fn append_text_block(message: &mut Value, reminder: &str) -> bool {
-    let Some(content) = message.get_mut("content") else {
-        return false;
-    };
-    let block = serde_json::json!({"type": "text", "text": reminder});
-    match content {
-        Value::Array(blocks) => blocks.push(block),
-        Value::String(text) => {
-            *content = Value::Array(vec![
-                serde_json::json!({"type": "text", "text": text.clone()}),
-                block,
-            ]);
-        }
-        _ => return false,
-    }
-    true
 }
 
 fn sse_response(sse: String) -> Response<Body> {
@@ -152,20 +83,208 @@ fn sse_response(sse: String) -> Response<Body> {
 }
 
 /// A running replay proxy. Aborting [`task`](Self::task) shuts it down; the
-/// caller writes [`ca_pem`](Self::ca_pem) to a temp file for `NODE_EXTRA_CA_CERTS`
-/// and drains [`real_rx`](Self::real_rx) for the genuine turn's SSE bytes.
+/// caller writes [`ca_pem`](Self::ca_pem) to a temp file for `NODE_EXTRA_CA_CERTS`.
+/// The genuine turn is read from the CLI's own stdout, not from the proxy.
 pub(crate) struct ProxyHandle {
     pub(crate) addr: SocketAddr,
     pub(crate) ca_pem: String,
-    pub(crate) real_rx: mpsc::UnboundedReceiver<Bytes>,
     pub(crate) task: JoinHandle<()>,
 }
 
+/// Upstream connector for the real passthrough turn.
+///
+/// hudsucker's default client dials the upstream directly; behind a system
+/// proxy (firewalled networks, or any deployment with `HTTPS_PROXY` set) the
+/// real turn can't reach `api.anthropic.com`. This connector honours
+/// `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` (like `mitmdump --mode upstream:`):
+/// it tunnels via HTTP `CONNECT` when a proxy is set, else dials directly, and
+/// terminates TLS against the real upstream itself either way.
+#[derive(Clone)]
+struct UpstreamConnector {
+    proxy: Option<String>,
+    tls: TlsConnector,
+}
+
+type TlsTcp = tokio_rustls::client::TlsStream<TcpStream>;
+
+/// Upstream stream: a TLS stream for the real Anthropic endpoint, or a plain
+/// TCP stream for the local MCP server (loopback HTTP). Wraps both so they
+/// satisfy hyper_util's `Connection` (`TokioIo` only forwards it when the inner
+/// type does, and a rustls `TlsStream` doesn't). Read/Write delegate inward.
+enum MaybeTls {
+    Tls(TokioIo<TlsTcp>),
+    Plain(TokioIo<TcpStream>),
+}
+
+impl Read for MaybeTls {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: ReadBufCursor<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTls::Tls(s) => Pin::new(s).poll_read(cx, buf),
+            MaybeTls::Plain(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl Write for MaybeTls {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            MaybeTls::Tls(s) => Pin::new(s).poll_write(cx, buf),
+            MaybeTls::Plain(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTls::Tls(s) => Pin::new(s).poll_flush(cx),
+            MaybeTls::Plain(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            MaybeTls::Tls(s) => Pin::new(s).poll_shutdown(cx),
+            MaybeTls::Plain(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+impl Connection for MaybeTls {
+    fn connected(&self) -> Connected {
+        Connected::new()
+    }
+}
+
+impl tower_service::Service<Uri> for UpstreamConnector {
+    type Response = MaybeTls;
+    type Error = std::io::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, uri: Uri) -> Self::Future {
+        let proxy = self.proxy.clone();
+        let tls = self.tls.clone();
+        Box::pin(async move {
+            let host = uri
+                .host()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no host"))?
+                .to_string();
+            let is_https = uri.scheme_str() != Some("http");
+            let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
+
+            // The local MCP server is reached over loopback; it must never be
+            // tunnelled through the upstream proxy (only the real Anthropic
+            // endpoint is). Mirrors NO_PROXY=localhost.
+            let is_loopback =
+                host == "localhost" || host == "::1" || host.starts_with("127.");
+            let tcp = match proxy.as_deref().filter(|_| !is_loopback) {
+                Some(p) => {
+                    let mut tcp = TcpStream::connect(p).await?;
+                    let req =
+                        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+                    tcp.write_all(req.as_bytes()).await?;
+                    let mut head = Vec::new();
+                    let mut b = [0u8; 1];
+                    loop {
+                        if tcp.read(&mut b).await? == 0 {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "upstream proxy closed during CONNECT",
+                            ));
+                        }
+                        head.push(b[0]);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                        if head.len() > 16 * 1024 {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "CONNECT response too large",
+                            ));
+                        }
+                    }
+                    let line = String::from_utf8_lossy(&head);
+                    let ok = line
+                        .split_whitespace()
+                        .nth(1)
+                        .map(|c| c.starts_with('2'))
+                        .unwrap_or(false);
+                    if !ok {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            format!(
+                                "upstream proxy CONNECT failed: {}",
+                                line.lines().next().unwrap_or("")
+                            ),
+                        ));
+                    }
+                    tcp
+                }
+                None => TcpStream::connect((host.as_str(), port)).await?,
+            };
+
+            if is_https {
+                let server_name = ServerName::try_from(host).map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string())
+                })?;
+                let tls_stream = tls.connect(server_name, tcp).await?;
+                Ok(MaybeTls::Tls(TokioIo::new(tls_stream)))
+            } else {
+                Ok(MaybeTls::Plain(TokioIo::new(tcp)))
+            }
+        })
+    }
+}
+
+/// Build the upstream client for the real passthrough turn, honouring the
+/// ambient `*_PROXY` env so it works behind a system proxy. TLS is terminated
+/// against the real upstream regardless.
+fn build_upstream_client() -> Client<UpstreamConnector, Body> {
+    let proxy = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ]
+    .iter()
+    .find_map(|k| std::env::var(k).ok())
+    .filter(|v| !v.trim().is_empty())
+    .map(|v| {
+        v.trim()
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_end_matches('/')
+            .to_string()
+    });
+
+    let provider = hudsucker::rustls::crypto::aws_lc_rs::default_provider();
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .expect("rustls default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tls = TlsConnector::from(Arc::new(config));
+
+    Client::builder(TokioExecutor::new())
+        .http1_title_case_headers(true)
+        .http1_preserve_header_case(true)
+        .build(UpstreamConnector { proxy, tls })
+}
+
 /// Spawn the replay proxy on a loopback ephemeral port.
-pub(crate) async fn spawn_proxy(
-    state: Arc<ReplayState>,
-    reminder: Option<String>,
-) -> Result<ProxyHandle, String> {
+pub(crate) async fn spawn_proxy(state: Arc<ReplayState>) -> Result<ProxyHandle, String> {
     let (authority, ca_pem) = build_ca()?;
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -175,18 +294,12 @@ pub(crate) async fn spawn_proxy(
         .local_addr()
         .map_err(|e| format!("replay proxy addr: {e}"))?;
 
-    let (tx, rx) = mpsc::unbounded_channel();
-    let handler = ReplayHandler {
-        state,
-        tee: tx,
-        reminder,
-        armed: false,
-    };
+    let handler = ReplayHandler { state };
 
     let proxy = Proxy::builder()
         .with_listener(listener)
         .with_ca(authority)
-        .with_rustls_client(hudsucker::rustls::crypto::aws_lc_rs::default_provider())
+        .with_client(build_upstream_client())
         .with_http_handler(handler)
         .build()
         .map_err(|e| format!("build replay proxy: {e}"))?;
@@ -200,7 +313,6 @@ pub(crate) async fn spawn_proxy(
     Ok(ProxyHandle {
         addr,
         ca_pem,
-        real_rx: rx,
         task,
     })
 }
@@ -266,7 +378,7 @@ mod tests {
             },
         ];
         let state = Arc::new(build_replay(&recorded, "m").unwrap());
-        let handle = spawn_proxy(state, None).await.unwrap();
+        let handle = spawn_proxy(state).await.unwrap();
 
         // Trust only the proxy's CA — mirrors NODE_EXTRA_CA_CERTS.
         let mut roots = RootCertStore::empty();
@@ -316,29 +428,5 @@ mod tests {
         assert!(resp.contains("mcp__agentix__bash"), "resp:\n{resp}");
 
         handle.task.abort();
-    }
-
-    #[test]
-    fn append_text_block_handles_array_and_string() {
-        // Array content (tool_result turn): reminder appended after the blocks.
-        let mut arr = serde_json::json!({
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]
-        });
-        assert!(append_text_block(&mut arr, "REMINDER"));
-        let blocks = arr["content"].as_array().unwrap();
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[1]["text"], "REMINDER");
-
-        // String content: promoted to an array preserving the original text.
-        let mut s = serde_json::json!({"role": "user", "content": "hello"});
-        assert!(append_text_block(&mut s, "REMINDER"));
-        let blocks = s["content"].as_array().unwrap();
-        assert_eq!(blocks[0]["text"], "hello");
-        assert_eq!(blocks[1]["text"], "REMINDER");
-
-        // Missing content: no-op, reported as not applied.
-        let mut none = serde_json::json!({"role": "user"});
-        assert!(!append_text_block(&mut none, "REMINDER"));
     }
 }

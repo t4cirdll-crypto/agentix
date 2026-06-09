@@ -324,7 +324,6 @@ pub(crate) fn build_anthropic_request(
     }
 
     stamp_cache_breakpoints(&mut out_messages);
-    append_reminder(&mut out_messages, config.reminder.as_deref());
 
     let anthropic_tools: Option<Vec<Tool>> = if tools.is_empty() {
         None
@@ -479,35 +478,6 @@ fn stamp_cache_breakpoints(messages: &mut [RequestMessage]) {
     }
 }
 
-fn append_reminder(messages: &mut Vec<RequestMessage>, reminder: Option<&str>) {
-    let Some(reminder) = reminder.filter(|s| !s.is_empty()) else {
-        return;
-    };
-    let block = ContentBlock::Text {
-        text: reminder.to_string(),
-        cache_control: None,
-    };
-    if let Some(msg) = messages.last_mut().filter(|msg| msg.role == "user") {
-        match &mut msg.content {
-            MessageContent::Text(text) => {
-                msg.content = MessageContent::Blocks(vec![
-                    ContentBlock::Text {
-                        text: text.clone(),
-                        cache_control: None,
-                    },
-                    block,
-                ]);
-            }
-            MessageContent::Blocks(blocks) => blocks.push(block),
-        }
-    } else {
-        messages.push(RequestMessage {
-            role: "user".into(),
-            content: MessageContent::Blocks(vec![block]),
-        });
-    }
-}
-
 fn stamp_cache(content: &mut MessageContent) {
     match content {
         MessageContent::Text(text) => {
@@ -623,22 +593,6 @@ mod tests {
             json["system"].is_null(),
             "absent system prompt must not serialize"
         );
-    }
-
-    #[test]
-    fn reminder_is_after_last_user_breakpoint() {
-        let mut config = cfg("S");
-        config.reminder = Some("<runtime_context>plan</runtime_context>".into());
-        let msgs = vec![Message::User(vec![Content::text("Actual user")])];
-        let req = build_anthropic_request(&config, &msgs, &[], false);
-        let json = serde_json::to_value(&req).unwrap();
-        let messages = json["messages"].as_array().unwrap();
-        let blocks = messages[0]["content"].as_array().unwrap();
-
-        assert_eq!(blocks[0]["text"], "Actual user");
-        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
-        assert_eq!(blocks[1]["text"], "<runtime_context>plan</runtime_context>");
-        assert!(blocks[1]["cache_control"].is_null());
     }
 
     #[test]
@@ -772,25 +726,5 @@ mod tests {
         assert_eq!(blocks[2]["signature"], "sig-B");
         assert_eq!(blocks[3]["type"], "tool_use");
         assert_eq!(blocks[3]["id"], "tu_2");
-    }
-
-    #[test]
-    fn reminder_after_tool_result_keeps_tool_result_breakpoint() {
-        let mut config = cfg("S");
-        config.reminder = Some("<runtime_context>plan</runtime_context>".into());
-        let msgs = vec![Message::ToolResult {
-            call_id: "toolu_1".into(),
-            content: vec![Content::text("579")],
-        }];
-        let req = build_anthropic_request(&config, &msgs, &[], false);
-        let json = serde_json::to_value(&req).unwrap();
-        let messages = json["messages"].as_array().unwrap();
-        let blocks = messages[0]["content"].as_array().unwrap();
-
-        assert_eq!(blocks[0]["type"], "tool_result");
-        assert_eq!(blocks[0]["cache_control"]["type"], "ephemeral");
-        assert_eq!(blocks[1]["type"], "text");
-        assert_eq!(blocks[1]["text"], "<runtime_context>plan</runtime_context>");
-        assert!(blocks[1]["cache_control"].is_null());
     }
 }

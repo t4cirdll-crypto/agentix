@@ -30,10 +30,7 @@ fn image_url_for_turn(img: &crate::request::ImageContent) -> Result<String, ApiE
     }
 }
 
-fn user_parts_to_turn_input(
-    parts: &[Content],
-    reminder: Option<&str>,
-) -> Result<Vec<Value>, ApiError> {
+fn user_parts_to_turn_input(parts: &[Content]) -> Result<Vec<Value>, ApiError> {
     let mut input = Vec::new();
     for part in parts {
         match part {
@@ -47,9 +44,6 @@ fn user_parts_to_turn_input(
                 ));
             }
         }
-    }
-    if let Some(reminder) = reminder.filter(|s| !s.is_empty()) {
-        input.push(json!({"type": "text", "text": reminder}));
     }
     Ok(input)
 }
@@ -98,22 +92,17 @@ fn split_history_and_input(
         if idx == last_idx
             && let Message::User(parts) = &msg
         {
-            input.extend(user_parts_to_turn_input(parts, config.reminder.as_deref())?);
+            input.extend(user_parts_to_turn_input(parts)?);
         } else {
             history.push(msg);
         }
     }
 
     if input.is_empty() {
-        if let Some(reminder) = config.reminder.as_ref().filter(|s| !s.is_empty()) {
-            input.push(json!({"type": "text", "text": reminder}));
-        } else {
-            input.push(json!({"type": "text", "text": "Continue."}));
-        }
+        input.push(json!({"type": "text", "text": "Continue."}));
     }
 
-    let mut inject_config = config.clone();
-    inject_config.reminder = None;
+    let inject_config = config.clone();
     let inject = crate::raw::openai::request::build_response_input_items(&inject_config, history)
         .into_iter()
         .map(normalize_inject_item)

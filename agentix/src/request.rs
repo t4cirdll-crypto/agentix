@@ -428,8 +428,6 @@ pub struct Request {
     pub system_message: Option<String>,
     /// Conversation history.
     pub messages: Vec<Message>,
-    /// Dynamic runtime context appended after the stable conversation prefix.
-    pub reminder: Option<String>,
 
     // ── Tools ────────────────────────────────────────────────────────────
     /// Tools the model may call.
@@ -472,7 +470,6 @@ impl Request {
             provider,
             system_message: None,
             messages: Vec::new(),
-            reminder: None,
             tools: Vec::new(),
             tool_choice: None,
             temperature: None,
@@ -568,12 +565,6 @@ impl Request {
     /// Set the system prompt.
     pub fn system_prompt(mut self, p: impl Into<String>) -> Self {
         self.system_message = Some(p.into());
-        self
-    }
-
-    /// Set dynamic runtime context for this request only.
-    pub fn reminder(mut self, p: impl Into<String>) -> Self {
-        self.reminder = Some(p.into());
         self
     }
 
@@ -879,7 +870,6 @@ impl Request {
             base_url: self.effective_base_url().to_string(),
             model: self.model.clone(),
             system_prompt: self.system_message.clone(),
-            reminder: self.reminder.clone(),
             max_tokens: self.max_tokens,
             temperature: self.temperature,
             reasoning_effort: self.reasoning_effort,

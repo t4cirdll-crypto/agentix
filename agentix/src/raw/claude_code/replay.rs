@@ -71,6 +71,13 @@ pub(crate) struct ReplayState {
 }
 
 impl ReplayState {
+    /// Number of faked (replayed) turns. The CLI's stdout emits this many
+    /// turns before the genuine passthrough turn, so the parser skips exactly
+    /// this many `message_stop`s to reach the real one.
+    pub(crate) fn fake_count(&self) -> usize {
+        self.fakes.len()
+    }
+
     /// Decide what to do with the next model call. Called once per
     /// `POST /v1/messages` the proxy sees.
     pub(crate) fn next_action(&self) -> TurnAction {

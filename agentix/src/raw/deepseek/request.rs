@@ -211,11 +211,6 @@ pub(crate) fn build_deepseek_request(
             }
         }
     }
-    if let Some(reminder) = config.reminder.as_deref().filter(|s| !s.is_empty()) {
-        messages.push(DsMessage::User {
-            content: UserMessageContent::Text(reminder.to_string()),
-        });
-    }
     let tools_opt = if tools.is_empty() {
         None
     } else {
