@@ -28,7 +28,16 @@ mcp-server = [
 ]
 claude-code = [
     "mcp-server",
+    # Reuse the Anthropic wire-format response constructors
+    # (`server::anthropic::outbound`) to render the proxy's faked SSE.
+    "server-anthropic",
     "dep:uuid",
+    # Intercepting MITM proxy used to replay tool-loop history into the CLI as a
+    # single continuous session (fixes prompt-cache collapse, see CHANGELOG).
+    "dep:rcgen",
+    "dep:hudsucker",
+    "dep:http-body-util",
+    "dep:bytes",
 ]
 codex = []
 server-anthropic = ["dep:axum"]
@@ -74,6 +83,16 @@ tokio-util = { version = "0.7.18", features = ["net"] }
 # Optional: UUID generation for Claude Code session files
 uuid = { version = "1", optional = true, features = ["v4"] }
 
+# Optional: Claude Code intercepting MITM proxy (history replay → prompt-cache fix).
+# `hudsucker` provides the CONNECT/TLS-MITM plumbing (built on the same
+# hyper/rustls/rcgen stack reqwest already pulls in); we only supply the
+# request/response replay handler and reuse `server::anthropic::outbound` to
+# render the faked Anthropic SSE.
+rcgen = { version = "0.13", optional = true }
+hudsucker = { version = "0.23", optional = true, default-features = false, features = ["rcgen-ca", "rustls-client"] }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+
 # Optional: tracing subscriber for the CLI binary
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"], optional = true }
 
@@ -110,3 +129,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # Used only by examples/14_admin_relay.
 base64 = "0.22"
 toml = "0.8"
+# Used only by the claude-code replay proxy integration test (TLS client that
+# trusts the proxy's throwaway CA and speaks CONNECT).
+tokio-rustls = "0.26"
+rustls-pemfile = "2"

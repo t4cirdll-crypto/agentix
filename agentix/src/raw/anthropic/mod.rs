@@ -210,7 +210,7 @@ fn anthropic_content_to_provider_data(content: serde_json::Value) -> serde_json:
     })
 }
 
-fn parse_stream_event(
+pub(crate) fn parse_stream_event(
     ev: StreamEvent,
     bufs: &mut StreamBufs,
     blocks: &mut Vec<Option<BlockBuild>>,
@@ -338,7 +338,7 @@ fn parse_stream_event(
 }
 
 #[derive(Debug)]
-enum BlockBuild {
+pub(crate) enum BlockBuild {
     Text {
         text: String,
     },
@@ -392,7 +392,9 @@ impl BlockBuild {
     }
 }
 
-fn assistant_state_from_blocks(blocks: &[Option<BlockBuild>]) -> Option<serde_json::Value> {
+pub(crate) fn assistant_state_from_blocks(
+    blocks: &[Option<BlockBuild>],
+) -> Option<serde_json::Value> {
     let has_thinking = blocks.iter().flatten().any(|b| {
         matches!(
             b,
@@ -410,7 +412,7 @@ fn assistant_state_from_blocks(blocks: &[Option<BlockBuild>]) -> Option<serde_js
     Some(serde_json::json!({ "anthropic_content": serde_json::Value::Array(arr) }))
 }
 
-fn finalize(bufs: &mut StreamBufs) -> Vec<ToolCall> {
+pub(crate) fn finalize(bufs: &mut StreamBufs) -> Vec<ToolCall> {
     bufs.tool_call_bufs
         .drain(..)
         .flatten()

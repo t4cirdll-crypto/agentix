@@ -1,3 +1,11 @@
+## [Unreleased]
+
+### Bug fixes
+
+- **`claude-code` provider: prompt cache no longer collapses on tool-loop turns.** When the provider drove a multi-turn conversation containing tool-call loops, Anthropic's prompt cache degraded to a system-only hit every turn — the whole message history was re-billed as `cache_creation` on each generation (≈9.3M `cache_creation` vs 5.5M `cache_read` on a real ~185-turn session). Root cause: the old resume/stdin split always left the resumed session ending on a bare `tool_result`, which made the CLI append a `"Continue from where you left off."` prompt onto a mid-history message that *moved every turn*, breaking the single last-message cache breakpoint's prefix (see issue #7). Fixed by no longer reshaping the tool loop: on tool-loop turns the provider now resumes only up to the last settled user message and lets the CLI rebuild the loop **live**, as one continuous session (the shape interactive Claude Code caches correctly). An in-process intercepting proxy (`HTTPS_PROXY` + a throwaway CA via `NODE_EXTRA_CA_CERTS`, still targeting the real `api.anthropic.com` so Max-OAuth is sent normally) answers each already-known model call with the recorded assistant turn and has the stub MCP server return the recorded tool result; the first call past the recorded steps passes through to Anthropic for the one real generation, which is teed back to parse the genuine output and cache-usage numbers. Replayed steps cost nothing. Requires the `claude-code` feature (now also pulls `server-anthropic` to reuse the Anthropic SSE response constructors, plus `hudsucker`/`rcgen` for the proxy).
+
+---
+
 ## [0.26.1] - 2026-06-03
 
 ### Bug fixes

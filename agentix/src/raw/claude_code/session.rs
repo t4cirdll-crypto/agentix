@@ -15,9 +15,12 @@ pub(crate) const MCP_SERVER_NAME: &str = "agentix";
 
 // ── Cleanup guard ─────────────────────────────────────────────────────────────
 
-/// Aborts the MCP server task and removes temp files on drop.
+/// Aborts the MCP server task (and, on the replay path, the intercepting proxy
+/// task) and removes temp files on drop.
 pub(crate) struct Cleanup {
     mcp_task: Option<JoinHandle<()>>,
+    /// The replay proxy's accept loop, present only on the tool-loop path.
+    pub(crate) proxy_task: Option<JoinHandle<()>>,
     pub(crate) temp_files: Vec<PathBuf>,
 }
 
@@ -25,6 +28,7 @@ impl Cleanup {
     pub(crate) fn new(mcp_task: JoinHandle<()>) -> Self {
         Self {
             mcp_task: Some(mcp_task),
+            proxy_task: None,
             temp_files: Vec::new(),
         }
     }
@@ -33,6 +37,9 @@ impl Cleanup {
 impl Drop for Cleanup {
     fn drop(&mut self) {
         if let Some(t) = self.mcp_task.take() {
+            t.abort();
+        }
+        if let Some(t) = self.proxy_task.take() {
             t.abort();
         }
         for path in std::mem::take(&mut self.temp_files) {

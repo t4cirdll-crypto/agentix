@@ -18,10 +18,13 @@
 //! Auth comes from the local `claude` CLI (Max OAuth / keychain); `api_key`
 //! is ignored.
 
+pub(crate) mod proxy;
+pub(crate) mod replay;
 pub(crate) mod session;
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use async_stream::stream;
 use async_trait::async_trait;
@@ -41,6 +44,7 @@ use crate::request::{Message, ToolCall};
 use crate::tool_trait::{Tool, ToolOutput};
 use crate::types::{CompleteResponse, FinishReason, PartialToolCall, ToolCallChunk, UsageStats};
 
+use self::replay::ReplayState;
 use self::session::{
     Cleanup, MCP_SERVER_NAME, is_tool_result_content, parse_usage, split_last_user,
     strip_mcp_prefix, write_fake_session,
@@ -168,6 +172,9 @@ fn assistant_replay_message(
 /// from pinning the subprocess alive until our drop cleanup.
 struct StubTools {
     defs: Vec<ToolDefinition>,
+    /// On the tool-loop replay path, the stub returns *recorded* tool results
+    /// (so the CLI rebuilds the exact history) instead of an empty stub.
+    replay: Option<Arc<ReplayState>>,
 }
 
 #[async_trait]
@@ -175,30 +182,83 @@ impl Tool for StubTools {
     fn raw_tools(&self) -> Vec<ToolDefinition> {
         self.defs.clone()
     }
-    async fn call(&self, _name: &str, _args: serde_json::Value) -> BoxStream<'static, ToolOutput> {
+    async fn call(&self, name: &str, args: serde_json::Value) -> BoxStream<'static, ToolOutput> {
+        if let Some(state) = &self.replay
+            && let Some(text) = state.take_tool_result(name, &args)
+        {
+            return futures::stream::iter(vec![ToolOutput::Result(vec![
+                crate::request::Content::text(text),
+            ])])
+            .boxed();
+        }
         futures::stream::iter(vec![ToolOutput::Result(vec![])]).boxed()
     }
 }
 
 // ── Subprocess setup (shared) ────────────────────────────────────────────────
 
-/// Build the MCP server, write the config + fake session files, spawn
-/// `claude -p`, and feed the user message on stdin. Returns the Cleanup guard
-/// and the live Child — caller drives stdout and is responsible for both
-/// `drop(child)` (SIGKILL via `kill_on_drop`) and `drop(guard)` (abort MCP
-/// task + remove temp files), **in that order**.
+/// A spawned `claude -p` subprocess plus its cleanup guard.
+struct Started {
+    guard: Cleanup,
+    child: Child,
+    /// `Some` on the tool-loop replay path: yields the genuine (passed-through)
+    /// turn's Anthropic SSE bytes, teed by the intercepting proxy. When present,
+    /// the caller parses *this* for the turn's output and usage, ignoring the
+    /// CLI's stdout (which carries the faked replay turns too).
+    real_rx: Option<tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>>,
+}
+
+/// The replay plan for a tool-loop turn: resume up to the last settled user
+/// message and re-derive everything after it live via the proxy + MCP.
+struct ReplayPlan {
+    /// History up to (but excluding) the last user message — resumed verbatim.
+    resume: Vec<Message>,
+    /// The last user message — fed on stdin to start the live run.
+    trigger: Vec<crate::request::Content>,
+    /// Shared replay coordinator (proxy fakes assistant turns, MCP returns the
+    /// recorded tool results).
+    state: std::sync::Arc<ReplayState>,
+}
+
+/// Decide whether this turn takes the replay path. It does exactly when the
+/// history tail is a `tool_result` (a tool-loop turn) and there is a settled
+/// user message to resume up to — the case where the old resume/stdin split
+/// collapsed the prompt cache (issue #7). A fresh user turn returns `None` and
+/// uses the plain single-shot path.
+fn plan_replay(messages: &[Message], model: &str) -> Option<ReplayPlan> {
+    if !matches!(messages.last(), Some(Message::ToolResult { .. })) {
+        return None;
+    }
+    let last_user = messages.iter().rposition(|m| matches!(m, Message::User(_)))?;
+    let state = replay::build_replay(&messages[last_user + 1..], model)?;
+    let Message::User(parts) = &messages[last_user] else {
+        return None;
+    };
+    Some(ReplayPlan {
+        resume: messages[..last_user].to_vec(),
+        trigger: parts.clone(),
+        state: std::sync::Arc::new(state),
+    })
+}
+
+/// Build the MCP server, write the config + fake session files, optionally spin
+/// up the intercepting replay proxy, spawn `claude -p`, and feed the user
+/// message on stdin. The caller drives the returned [`Started`] and is
+/// responsible for `drop(child)` (SIGKILL via `kill_on_drop`) then
+/// `drop(guard)` (abort MCP/proxy tasks + remove temp files), **in that order**.
 async fn start_claude(
     config: &AgentConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
-) -> Result<(Cleanup, Child), ApiError> {
-    let (mut prev_history, mut last_user_content) =
-        split_last_user(messages.to_vec()).map_err(ApiError::Other)?;
+) -> Result<Started, ApiError> {
+    let replay_plan = plan_replay(messages, &config.model);
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let mcp_addr = listener.local_addr()?;
+    let replay_state: Option<Arc<ReplayState>> = replay_plan.as_ref().map(|p| p.state.clone());
     let stub = StubTools {
         defs: tools.to_vec(),
+        replay: replay_state,
     };
     let router = McpServer::new(stub).into_axum_router();
     let mcp_task = tokio::spawn(async move {
@@ -223,38 +283,80 @@ async fn start_claude(
     guard.temp_files.push(mcp_config_path.clone());
 
     let mut resume_args: Vec<String> = Vec::new();
-    let tail_is_tool_result = is_tool_result_content(&last_user_content);
-    let pending_assistant = if tail_is_tool_result {
-        match prev_history.last() {
-            Some(Message::Assistant { .. }) => prev_history.pop(),
-            _ => None,
-        }
-    } else {
-        None
-    };
-    let resume_history = prev_history;
     let mut session_id: Option<String> = None;
-    if !resume_history.is_empty() {
-        let (sid, path, id_map) = write_fake_session(&resume_history)
-            .await
-            .map_err(|e| ApiError::Other(format!("write fake session: {e}")))?;
-        guard.temp_files.push(path);
-        resume_args.push("--resume".into());
-        resume_args.push(sid.clone());
-        session_id = Some(sid);
-        // Rewrite any tool_use_ids in the stdin message to match the remapped
-        // ids in the resumed session.
-        self::session::remap_tool_use_ids(&mut last_user_content, &id_map);
-    }
+    let mut stdin_prefix: Vec<serde_json::Value> = Vec::new();
+    let mut tail_is_tool_result = false;
+    let last_user_content: serde_json::Value;
+    let mut real_rx = None;
+    // (proxy listener addr, CA cert temp path) — set on the replay path.
+    let mut proxy_env: Option<(std::net::SocketAddr, std::path::PathBuf)> = None;
 
-    let mut stdin_prefix = Vec::new();
-    if let Some(assistant) = pending_assistant
-        && let Some((msg, id_map)) = assistant_replay_message(assistant, session_id.as_deref())
-    {
-        self::session::remap_tool_use_ids(&mut last_user_content, &id_map);
-        stdin_prefix.push(msg);
+    if let Some(plan) = replay_plan {
+        // ── Replay path ──────────────────────────────────────────────────
+        // Resume the settled prefix, feed the last user message on stdin, and
+        // let the CLI rebuild the tool loop live against the proxy + MCP.
+        last_user_content = self::session::user_content_to_json(&plan.trigger);
+        if !plan.resume.is_empty() {
+            let (sid, path, _id_map) = write_fake_session(&plan.resume)
+                .await
+                .map_err(|e| ApiError::Other(format!("write fake session: {e}")))?;
+            guard.temp_files.push(path);
+            resume_args.push("--resume".into());
+            resume_args.push(sid.clone());
+            session_id = Some(sid);
+        }
+
+        let handle = proxy::spawn_proxy(plan.state, config.reminder.clone())
+            .await
+            .map_err(|e| ApiError::Other(format!("spawn replay proxy: {e}")))?;
+        guard.proxy_task = Some(handle.task);
+        let ca_path =
+            std::env::temp_dir().join(format!("agentix-cc-ca-{}.pem", uuid::Uuid::new_v4()));
+        tokio::fs::write(&ca_path, handle.ca_pem)
+            .await
+            .map_err(|e| ApiError::Other(format!("write replay CA: {e}")))?;
+        guard.temp_files.push(ca_path.clone());
+        proxy_env = Some((handle.addr, ca_path));
+        real_rx = Some(handle.real_rx);
+    } else {
+        // ── Single-shot path (fresh user turn / degenerate histories) ─────
+        let (mut prev_history, mut content) =
+            split_last_user(messages.to_vec()).map_err(ApiError::Other)?;
+        tail_is_tool_result = is_tool_result_content(&content);
+        let pending_assistant = if tail_is_tool_result {
+            match prev_history.last() {
+                Some(Message::Assistant { .. }) => prev_history.pop(),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let resume_history = prev_history;
+        if !resume_history.is_empty() {
+            let (sid, path, id_map) = write_fake_session(&resume_history)
+                .await
+                .map_err(|e| ApiError::Other(format!("write fake session: {e}")))?;
+            guard.temp_files.push(path);
+            resume_args.push("--resume".into());
+            resume_args.push(sid.clone());
+            session_id = Some(sid);
+            // Rewrite any tool_use_ids in the stdin message to match the
+            // remapped ids in the resumed session.
+            self::session::remap_tool_use_ids(&mut content, &id_map);
+        }
+        if let Some(assistant) = pending_assistant
+            && let Some((msg, id_map)) = assistant_replay_message(assistant, session_id.as_deref())
+        {
+            self::session::remap_tool_use_ids(&mut content, &id_map);
+            stdin_prefix.push(msg);
+        }
+        // Dynamic reminder rides the (last) stdin message on this path. On the
+        // replay path it must instead land on the *last* message of the real
+        // request (injected by the proxy), never on the mid-prefix trigger
+        // user — otherwise a changing reminder would re-break the cache.
+        append_reminder_content(&mut content, config.reminder.as_deref());
+        last_user_content = content;
     }
-    append_reminder_content(&mut last_user_content, config.reminder.as_deref());
 
     let mut args: Vec<String> = vec![
         "-p".into(),
@@ -307,6 +409,20 @@ async fn start_claude(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    // On the replay path, route the CLI's API traffic through our intercepting
+    // proxy (which still targets the real api.anthropic.com, so Max-OAuth is
+    // sent normally) and trust its throwaway CA.
+    if let Some((addr, ca_path)) = &proxy_env {
+        let url = format!("http://{addr}");
+        cmd.env("HTTP_PROXY", &url)
+            .env("HTTPS_PROXY", &url)
+            .env("http_proxy", &url)
+            .env("https_proxy", &url)
+            .env("NODE_EXTRA_CA_CERTS", ca_path)
+            .env("NO_PROXY", "")
+            .env("no_proxy", "");
+    }
+
     let mut child = cmd
         .spawn()
         .map_err(|e| ApiError::Other(format!("spawn claude: {e}")))?;
@@ -358,7 +474,6 @@ async fn start_claude(
     }
 
     if let Some(err) = child.stderr.take() {
-        let cc_debug = cc_debug;
         tokio::spawn(async move {
             let mut elines = BufReader::new(err).lines();
             while let Ok(Some(l)) = elines.next_line().await {
@@ -370,7 +485,11 @@ async fn start_claude(
         });
     }
 
-    Ok((guard, child))
+    Ok(Started {
+        guard,
+        child,
+        real_rx,
+    })
 }
 
 // ── Stream-JSON → LlmEvent (partial deltas) ─────────────────────────────────
@@ -586,6 +705,153 @@ fn translate_stream_event_line(v: &serde_json::Value, state: &mut StreamState) -
     out
 }
 
+// ── Replay path: parse the proxy-teed genuine-turn SSE ──────────────────────
+
+/// Pull the recorded data line(s) out of one SSE event block.
+fn sse_data(block: &str) -> Option<String> {
+    let mut data = String::new();
+    let mut has = false;
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            if has {
+                data.push('\n');
+            }
+            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            has = true;
+        }
+    }
+    has.then_some(data)
+}
+
+/// Fold a usage snapshot into the accumulator. Anthropic splits usage across
+/// `message_start` (input + cache counts) and `message_delta` (final output),
+/// so we keep the non-zero fields from whichever event carried them rather than
+/// letting the later zero-cache delta clobber the cache numbers.
+fn merge_usage(acc: &mut UsageStats, u: UsageStats) {
+    if u.prompt_tokens > 0 {
+        acc.prompt_tokens = u.prompt_tokens;
+    }
+    if u.completion_tokens > 0 {
+        acc.completion_tokens = u.completion_tokens;
+    }
+    if u.cache_read_tokens > 0 {
+        acc.cache_read_tokens = u.cache_read_tokens;
+    }
+    if u.cache_creation_tokens > 0 {
+        acc.cache_creation_tokens = u.cache_creation_tokens;
+    }
+    acc.total_tokens = acc.prompt_tokens + acc.completion_tokens;
+}
+
+/// Strip the `mcp__agentix__` namespace the CLI adds to MCP tool names so the
+/// caller sees the bare tool names it registered.
+fn strip_event_prefix(ev: LlmEvent) -> LlmEvent {
+    match ev {
+        LlmEvent::ToolCallChunk(mut c) => {
+            c.name = strip_mcp_prefix(&c.name);
+            LlmEvent::ToolCallChunk(c)
+        }
+        other => other,
+    }
+}
+
+/// Drive the replay turn: drain the CLI's stdout to keep it unblocked and parse
+/// the genuine Anthropic SSE teed by the proxy into `LlmEvent`s (reusing the
+/// Anthropic provider's stream parser).
+fn proxy_event_stream(
+    guard: Cleanup,
+    mut child: Child,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>,
+) -> BoxStream<'static, LlmEvent> {
+    use crate::raw::anthropic::response::StreamEvent as AStreamEvent;
+    use crate::raw::anthropic::{BlockBuild, assistant_state_from_blocks, finalize, parse_stream_event};
+    use crate::types::StreamBufs;
+
+    let cc_debug = std::env::var("AGENTIX_CC_DEBUG").is_ok();
+    stream! {
+        let guard = guard;
+        // Drain the CLI's stdout (it carries the faked replay turns too) so its
+        // pipe never blocks while we read the real turn from the proxy tee.
+        if let Some(out) = child.stdout.take() {
+            tokio::spawn(async move {
+                let mut l = BufReader::new(out).lines();
+                while let Ok(Some(_)) = l.next_line().await {}
+            });
+        }
+
+        let mut bufs = StreamBufs::new();
+        let mut blocks: Vec<Option<BlockBuild>> = Vec::new();
+        let mut acc_usage = UsageStats::default();
+        let mut usage_seen = false;
+        let mut sse_buf = String::new();
+        let mut saw_stop = false;
+        let mut terminal = false;
+
+        loop {
+            tokio::select! {
+                chunk = rx.recv() => {
+                    let Some(bytes) = chunk else {
+                        if !saw_stop {
+                            yield LlmEvent::Error("replay proxy closed before message_stop".into());
+                            terminal = true;
+                        }
+                        break;
+                    };
+                    sse_buf.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(pos) = sse_buf.find("\n\n") {
+                        let block: String = sse_buf.drain(..pos + 2).collect();
+                        let Some(data) = sse_data(&block) else { continue };
+                        if cc_debug { eprintln!("[cc-proxy-sse] {data}"); }
+                        if data == "[DONE]" { continue; }
+                        match serde_json::from_str::<AStreamEvent>(&data) {
+                            Ok(ev) => {
+                                if matches!(ev, AStreamEvent::MessageStop) { saw_stop = true; }
+                                for lev in parse_stream_event(ev, &mut bufs, &mut blocks) {
+                                    match lev {
+                                        LlmEvent::Usage(u) => { usage_seen = true; merge_usage(&mut acc_usage, u); }
+                                        other => yield strip_event_prefix(other),
+                                    }
+                                }
+                            }
+                            Err(e) => warn!(data = %data, error = %e, "replay sse parse failed"),
+                        }
+                    }
+                    if saw_stop { break; }
+                }
+                status = child.wait() => {
+                    if !saw_stop {
+                        match status {
+                            Ok(s) => yield LlmEvent::Error(format!("claude exited before real turn completed ({s})")),
+                            Err(e) => yield LlmEvent::Error(format!("wait claude: {e}")),
+                        }
+                        terminal = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if saw_stop {
+            for tc in finalize(&mut bufs) {
+                yield LlmEvent::ToolCall(ToolCall { name: strip_mcp_prefix(&tc.name), ..tc });
+            }
+            if usage_seen {
+                yield LlmEvent::Usage(acc_usage);
+            }
+            if let Some(state) = assistant_state_from_blocks(&blocks) {
+                yield LlmEvent::AssistantState(state);
+            }
+            yield LlmEvent::Done;
+        } else if !terminal {
+            yield LlmEvent::Error("replay ended unexpectedly".into());
+        }
+
+        drop(child);
+        drop(guard);
+    }
+    .boxed()
+}
+
 // ── stream_claude_code ──────────────────────────────────────────────────────
 
 pub(crate) async fn stream_claude_code(
@@ -595,7 +861,18 @@ pub(crate) async fn stream_claude_code(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Result<BoxStream<'static, LlmEvent>, ApiError> {
-    let (guard, mut child) = start_claude(config, messages, tools).await?;
+    let Started {
+        guard,
+        mut child,
+        real_rx,
+    } = start_claude(config, messages, tools).await?;
+
+    // Replay (tool-loop) path: the genuine turn comes back through the proxy
+    // tee, not the CLI's stdout — parse that for output + real cache usage.
+    if let Some(rx) = real_rx {
+        return Ok(proxy_event_stream(guard, child, rx).boxed());
+    }
+
     let stdout = child
         .stdout
         .take()
