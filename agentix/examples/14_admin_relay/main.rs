@@ -126,8 +126,8 @@ async fn main() -> ExitCode {
     let resolver: Arc<dyn agentix::server::fallback::ChainResolver> = Arc::new(routes.clone());
     let mut router = axum::Router::new();
 
-    let anthropic = AnthropicServer::with_resolver(resolver.clone())
-        .with_usage_logger(usage_logger.clone());
+    let anthropic =
+        AnthropicServer::with_resolver(resolver.clone()).with_usage_logger(usage_logger.clone());
     router = router.merge(anthropic.router());
 
     #[cfg(feature = "server-openai-chat")]

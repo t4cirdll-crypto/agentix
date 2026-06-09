@@ -54,7 +54,11 @@ struct ReplayHandler {
 }
 
 impl HttpHandler for ReplayHandler {
-    async fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
+    async fn handle_request(
+        &mut self,
+        _ctx: &HttpContext,
+        req: Request<Body>,
+    ) -> RequestOrResponse {
         let is_messages =
             req.method() == Method::POST && req.uri().path().ends_with("/v1/messages");
         if is_messages {
@@ -111,6 +115,10 @@ type TlsTcp = tokio_rustls::client::TlsStream<TcpStream>;
 /// TCP stream for the local MCP server (loopback HTTP). Wraps both so they
 /// satisfy hyper_util's `Connection` (`TokioIo` only forwards it when the inner
 /// type does, and a rustls `TlsStream` doesn't). Read/Write delegate inward.
+///
+/// The size gap between the TLS and plain variants is expected — both are live
+/// connection types and boxing the hot TLS path would only add indirection.
+#[allow(clippy::large_enum_variant)]
 enum MaybeTls {
     Tls(TokioIo<TlsTcp>),
     Plain(TokioIo<TcpStream>),
@@ -183,8 +191,7 @@ impl tower_service::Service<Uri> for UpstreamConnector {
             // The local MCP server is reached over loopback; it must never be
             // tunnelled through the upstream proxy (only the real Anthropic
             // endpoint is). Mirrors NO_PROXY=localhost.
-            let is_loopback =
-                host == "localhost" || host == "::1" || host.starts_with("127.");
+            let is_loopback = host == "localhost" || host == "::1" || host.starts_with("127.");
             let tcp = match proxy.as_deref().filter(|_| !is_loopback) {
                 Some(p) => {
                     let mut tcp = TcpStream::connect(p).await?;
@@ -310,11 +317,7 @@ pub(crate) async fn spawn_proxy(state: Arc<ReplayState>) -> Result<ProxyHandle, 
         }
     });
 
-    Ok(ProxyHandle {
-        addr,
-        ca_pem,
-        task,
-    })
+    Ok(ProxyHandle { addr, ca_pem, task })
 }
 
 /// Generate a throwaway CA for this run. Returns the authority (mints per-host
@@ -385,12 +388,13 @@ mod tests {
         for cert in rustls_pemfile::certs(&mut handle.ca_pem.as_bytes()) {
             roots.add(cert.unwrap()).unwrap();
         }
-        let client_cfg =
-            ClientConfig::builder_with_provider(Arc::new(hudsucker::rustls::crypto::aws_lc_rs::default_provider()))
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+        let client_cfg = ClientConfig::builder_with_provider(Arc::new(
+            hudsucker::rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(client_cfg));
 
         // CONNECT through the proxy to the (never-contacted) upstream host.

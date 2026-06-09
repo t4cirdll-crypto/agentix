@@ -34,10 +34,7 @@ pub fn token_auth_layer(
 + Send
 + Sync
 + 'static
-+ Fn(
-    Request,
-    Next,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
++ Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     move |mut req: Request, next: Next| {
         let registry = registry.clone();
         Box::pin(async move {
@@ -71,7 +68,11 @@ fn extract_proxy_token(headers: &axum::http::HeaderMap) -> Option<String> {
     }
     let xapi = headers.get("x-api-key").and_then(|v| v.to_str().ok())?;
     let t = xapi.trim();
-    if t.is_empty() { None } else { Some(t.to_string()) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 fn unauthorized_json(message: &str) -> Response {
@@ -94,10 +95,7 @@ pub fn admin_basic_auth_layer(
 + Send
 + Sync
 + 'static
-+ Fn(
-    Request,
-    Next,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
++ Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     move |req: Request, next: Next| {
         let admin_password = admin_password.clone();
         Box::pin(async move {
@@ -149,10 +147,7 @@ pub fn quota_layer(
 + Send
 + Sync
 + 'static
-+ Fn(
-    Request,
-    Next,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
++ Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let registry = registry;
     let usage_log = Arc::new(usage_log);
     move |req: Request, next: Next| {
@@ -173,17 +168,15 @@ pub fn quota_layer(
                 return next.run(req).await;
             };
 
-            let used = match crate::aggregate::user_month_token_total(
-                usage_log.as_ref(),
-                &authed.user,
-            ) {
-                Ok(n) => n,
-                Err(_) => {
-                    // Reading the log failed (e.g. file missing) → allow
-                    // through and log; don't block traffic on log issues.
-                    return next.run(req).await;
-                }
-            };
+            let used =
+                match crate::aggregate::user_month_token_total(usage_log.as_ref(), &authed.user) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        // Reading the log failed (e.g. file missing) → allow
+                        // through and log; don't block traffic on log issues.
+                        return next.run(req).await;
+                    }
+                };
 
             if used >= budget {
                 let body = json!({

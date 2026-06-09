@@ -469,7 +469,9 @@ mod tests {
     fn logger_records_error_status() {
         let tmp = tempfile_path();
         let logger = UsageLogger::open(&tmp, true).unwrap();
-        let rec = UsageRecord::builder("openai_chat", "x").error("upstream 503").build();
+        let rec = UsageRecord::builder("openai_chat", "x")
+            .error("upstream 503")
+            .build();
         logger.log(&rec);
         drop(logger);
         let content = std::fs::read_to_string(&tmp).unwrap();

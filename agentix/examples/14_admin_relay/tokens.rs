@@ -135,11 +135,7 @@ impl TokenRegistry {
             })
             .collect();
         // Stable on-disk ordering: sort by user, then by token.
-        entries.sort_by(|a, b| {
-            a.user
-                .cmp(&b.user)
-                .then_with(|| a.token.cmp(&b.token))
-        });
+        entries.sort_by(|a, b| a.user.cmp(&b.user).then_with(|| a.token.cmp(&b.token)));
         let body = toml::to_string_pretty(&TokensFile { token: entries })
             .map_err(|e| format!("serialize tokens: {e}"))?;
         crate::routes::atomic_write_pub(&self.path, body.as_bytes())

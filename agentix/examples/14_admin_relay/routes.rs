@@ -57,7 +57,11 @@ impl UpstreamEntry {
         let token = self
             .token
             .clone()
-            .or_else(|| self.token_env.as_deref().and_then(|e| std::env::var(e).ok()))
+            .or_else(|| {
+                self.token_env
+                    .as_deref()
+                    .and_then(|e| std::env::var(e).ok())
+            })
             .unwrap_or_default();
 
         if self.target.starts_with("http://") || self.target.starts_with("https://") {
@@ -130,8 +134,8 @@ pub struct RoutesHandle {
 impl RoutesHandle {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        let body = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let body =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let parsed: RoutesFile =
             toml::from_str(&body).map_err(|e| format!("parse {}: {e}", path.display()))?;
         Ok(Self {
@@ -151,8 +155,10 @@ impl RoutesHandle {
     /// Replace the entire route list, persist to disk, return old routes
     /// for caller. Atomic write: tmp file + fsync + rename.
     pub fn replace_all(&self, new_routes: Vec<Route>) -> Result<Vec<Route>, String> {
-        let body = toml::to_string_pretty(&RoutesFile { route: new_routes.clone() })
-            .map_err(|e| format!("serialize routes: {e}"))?;
+        let body = toml::to_string_pretty(&RoutesFile {
+            route: new_routes.clone(),
+        })
+        .map_err(|e| format!("serialize routes: {e}"))?;
         atomic_write(&self.path, body.as_bytes())?;
         let mut g = self.inner.write().unwrap();
         let old = std::mem::replace(&mut *g, new_routes);
@@ -249,8 +255,8 @@ fn atomic_write(path: &Path, body: &[u8]) -> Result<(), String> {
             .unwrap_or(0)
     ));
     {
-        let mut f = std::fs::File::create(&tmp)
-            .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        let mut f =
+            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
         f.write_all(body)
             .map_err(|e| format!("write {}: {e}", tmp.display()))?;
         f.sync_all()

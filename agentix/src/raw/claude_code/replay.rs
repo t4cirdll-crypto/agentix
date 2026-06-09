@@ -132,7 +132,8 @@ pub(crate) fn build_replay(recorded: &[Message], model: &str) -> Option<ReplaySt
 
         // Gather this turn's tool results (the consecutive ToolResults that
         // follow the assistant) keyed by call id.
-        let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut j = i + 1;
         while let Some(Message::ToolResult { call_id, content }) = recorded.get(j) {
             results.insert(call_id.clone(), join_text(content));
@@ -277,13 +278,15 @@ mod tests {
         let a0 = st.next_action();
         assert!(matches!(a0, TurnAction::Fake(_)));
         assert_eq!(
-            st.take_tool_result("bash", &serde_json::json!({"cmd":"ls"})).as_deref(),
+            st.take_tool_result("bash", &serde_json::json!({"cmd":"ls"}))
+                .as_deref(),
             Some("file.txt")
         );
         // Turn 1
         assert!(matches!(st.next_action(), TurnAction::Fake(_)));
         assert_eq!(
-            st.take_tool_result("bash", &serde_json::json!({"cmd":"cat"})).as_deref(),
+            st.take_tool_result("bash", &serde_json::json!({"cmd":"cat"}))
+                .as_deref(),
             Some("hello")
         );
         // Real generation
@@ -316,8 +319,16 @@ mod tests {
                 content: None,
                 reasoning: None,
                 tool_calls: vec![
-                    ToolCall { id: "a".into(), name: "t".into(), arguments: "{}".into() },
-                    ToolCall { id: "b".into(), name: "t".into(), arguments: "{}".into() },
+                    ToolCall {
+                        id: "a".into(),
+                        name: "t".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "b".into(),
+                        name: "t".into(),
+                        arguments: "{}".into(),
+                    },
                 ],
                 provider_data: None,
             },

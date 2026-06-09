@@ -497,18 +497,16 @@ async fn main() -> ExitCode {
 
     // Open the usage log if requested. Shared Arc across all enabled servers.
     let usage_logger = match cli.usage_log.as_deref() {
-        Some(path) => {
-            match agentix::server::UsageLogger::open(path, true) {
-                Ok(l) => {
-                    tracing::info!(path = %path, "usage log open");
-                    Some(std::sync::Arc::new(l))
-                }
-                Err(e) => {
-                    eprintln!("failed to open usage log {path}: {e}");
-                    return ExitCode::FAILURE;
-                }
+        Some(path) => match agentix::server::UsageLogger::open(path, true) {
+            Ok(l) => {
+                tracing::info!(path = %path, "usage log open");
+                Some(std::sync::Arc::new(l))
             }
-        }
+            Err(e) => {
+                eprintln!("failed to open usage log {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
         None => None,
     };
 
@@ -684,8 +682,16 @@ mod tests {
     #[test]
     fn match_flag_binds_to_last_upstream() {
         let cli = parse_args(&[
-            "-i", "anthropic", "--match", "claude-*",
-            "-i", "deepseek", "--match", "deepseek-*", "--match", "*",
+            "-i",
+            "anthropic",
+            "--match",
+            "claude-*",
+            "-i",
+            "deepseek",
+            "--match",
+            "deepseek-*",
+            "--match",
+            "*",
         ])
         .unwrap();
         assert_eq!(cli.upstreams.len(), 2);

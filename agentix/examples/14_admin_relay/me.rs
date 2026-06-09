@@ -84,10 +84,8 @@ async fn me_usage(
         .lookup(&user.token)
         .and_then(|e| e.monthly_token_budget);
 
-    let pricer = crate::pricing::record_pricer(
-        server.inner.pricing.clone(),
-        server.inner.routes.clone(),
-    );
+    let pricer =
+        crate::pricing::record_pricer(server.inner.pricing.clone(), server.inner.routes.clone());
     match crate::aggregate::user_month_summary(
         &server.inner.usage_log_path,
         &user.user,

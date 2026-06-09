@@ -114,6 +114,10 @@ impl SessionStore {
     pub fn len(&self) -> usize {
         self.inner.lock().unwrap().map.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().map.is_empty()
+    }
 }
 
 #[cfg(test)]

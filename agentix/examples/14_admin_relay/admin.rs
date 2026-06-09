@@ -69,11 +69,11 @@ impl AdminServer {
             .route("/admin", get(dashboard_html))
             .route("/admin/", get(dashboard_html))
             .route("/admin/api/dashboard", get(dashboard_api))
+            .route("/admin/api/tokens", get(tokens_list).post(tokens_create))
             .route(
-                "/admin/api/tokens",
-                get(tokens_list).post(tokens_create),
+                "/admin/api/tokens/{token}",
+                delete(tokens_revoke).put(tokens_update),
             )
-            .route("/admin/api/tokens/{token}", delete(tokens_revoke).put(tokens_update))
             .route(
                 "/admin/api/routes",
                 get(routes_list).post(routes_create).put(routes_replace_all),
@@ -100,10 +100,8 @@ async fn dashboard_html() -> impl IntoResponse {
 }
 
 async fn dashboard_api(State(server): State<AdminServer>) -> Response {
-    let pricer = crate::pricing::record_pricer(
-        server.inner.pricing.clone(),
-        server.inner.routes.clone(),
-    );
+    let pricer =
+        crate::pricing::record_pricer(server.inner.pricing.clone(), server.inner.routes.clone());
     match crate::aggregate::aggregate(&server.inner.usage_log_path, 100, &pricer) {
         Ok(d) => Json(d).into_response(),
         Err(e) => {
@@ -243,10 +241,7 @@ async fn routes_list(State(server): State<AdminServer>) -> Response {
     Json(serde_json::json!({ "routes": items })).into_response()
 }
 
-async fn routes_create(
-    State(server): State<AdminServer>,
-    Json(route): Json<Route>,
-) -> Response {
+async fn routes_create(State(server): State<AdminServer>, Json(route): Json<Route>) -> Response {
     if let Err(e) = validate_route(&route) {
         return bad_request(e);
     }

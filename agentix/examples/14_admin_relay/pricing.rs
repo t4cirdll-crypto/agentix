@@ -154,7 +154,10 @@ impl PricingHandle {
         if empty || stale {
             handle.refresh().await;
         } else {
-            info!(models = disk.models.len(), "pricing catalog loaded from cache");
+            info!(
+                models = disk.models.len(),
+                "pricing catalog loaded from cache"
+            );
         }
         handle
     }
@@ -194,7 +197,12 @@ impl PricingHandle {
     }
 
     pub fn rate(&self, pricing_model: &str) -> Option<ModelRate> {
-        self.inner.read().unwrap().models.get(pricing_model).copied()
+        self.inner
+            .read()
+            .unwrap()
+            .models
+            .get(pricing_model)
+            .copied()
     }
 
     /// Cost for one request priced against `pricing_model`. Unknown model or
@@ -232,16 +240,18 @@ pub fn record_pricer(
             return 0.0;
         };
         match routes.pricing_model_for(model) {
-            Some(pm) => pricing
-                .cost(
-                    &pm,
-                    r.input_tokens,
-                    r.output_tokens,
-                    r.cache_read_tokens,
-                    r.cache_creation_tokens,
-                    r.reasoning_tokens,
-                )
-                .total_usd,
+            Some(pm) => {
+                pricing
+                    .cost(
+                        &pm,
+                        r.input_tokens,
+                        r.output_tokens,
+                        r.cache_read_tokens,
+                        r.cache_creation_tokens,
+                        r.reasoning_tokens,
+                    )
+                    .total_usd
+            }
             None => 0.0,
         }
     }

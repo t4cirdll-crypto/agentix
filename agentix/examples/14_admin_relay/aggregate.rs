@@ -413,7 +413,11 @@ mod tests {
         assert_eq!(data.per_day[1].date, "2026-05-23");
 
         assert!(data.per_model.iter().any(|m| m.key == "ClaudeCode/sonnet"));
-        assert!(data.per_model.iter().any(|m| m.key == "DeepSeek/deepseek-chat"));
+        assert!(
+            data.per_model
+                .iter()
+                .any(|m| m.key == "DeepSeek/deepseek-chat")
+        );
 
         assert_eq!(data.recent.len(), 3);
         // Newest first.

@@ -177,7 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "write_audit_note",
     ];
     if observed != expected {
-        return Err(format!("unexpected tool order: expected {expected:?}, got {observed:?}").into());
+        return Err(
+            format!("unexpected tool order: expected {expected:?}, got {observed:?}").into(),
+        );
     }
     if tool_results < expected.len() {
         return Err(format!(

@@ -358,7 +358,10 @@ mod tests {
 
     #[test]
     fn glob_multi_wildcard() {
-        assert!(glob_match("claude-*-sonnet-*", "claude-3-5-sonnet-20240620"));
+        assert!(glob_match(
+            "claude-*-sonnet-*",
+            "claude-3-5-sonnet-20240620"
+        ));
         assert!(!glob_match("claude-*-opus-*", "claude-3-5-sonnet-20240620"));
     }
 
@@ -370,8 +373,7 @@ mod tests {
 
     #[test]
     fn upstream_accepts_specific() {
-        let s = UpstreamSpec::new(Provider::Anthropic, "")
-            .with_match("claude-*");
+        let s = UpstreamSpec::new(Provider::Anthropic, "").with_match("claude-*");
         assert!(s.accepts_model("claude-sonnet-4-5"));
         assert!(!s.accepts_model("gpt-4o"));
     }

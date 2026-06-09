@@ -209,7 +209,9 @@ fn plan_replay(messages: &[Message], model: &str) -> Option<ReplayPlan> {
     if !matches!(messages.last(), Some(Message::ToolResult { .. })) {
         return None;
     }
-    let last_user = messages.iter().rposition(|m| matches!(m, Message::User(_)))?;
+    let last_user = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::User(_)))?;
     let state = replay::build_replay(&messages[last_user + 1..], model)?;
     let Message::User(parts) = &messages[last_user] else {
         return None;
@@ -727,7 +729,9 @@ fn proxy_event_stream(
     skip_turns: usize,
 ) -> BoxStream<'static, LlmEvent> {
     use crate::raw::anthropic::response::StreamEvent as AStreamEvent;
-    use crate::raw::anthropic::{BlockBuild, assistant_state_from_blocks, finalize, parse_stream_event};
+    use crate::raw::anthropic::{
+        BlockBuild, assistant_state_from_blocks, finalize, parse_stream_event,
+    };
     use crate::types::StreamBufs;
 
     stream! {
