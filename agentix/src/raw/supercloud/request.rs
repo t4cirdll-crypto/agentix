@@ -36,7 +36,10 @@ pub(crate) enum MessageWire {
     },
     #[serde(rename = "user")]
     User {
-        content: Vec<UserContentPart>,
+        /// Content as a plain string for single text, or JSON array for
+        /// multi-part messages. Uses `serde_json::Value` so serde picks
+        /// the right wire format automatically.
+        content: Value,
     },
     #[serde(rename = "assistant")]
     Assistant {
@@ -51,18 +54,6 @@ pub(crate) enum MessageWire {
         content: String,
         tool_call_id: String,
     },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub(crate) enum UserContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageUrlWire },
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ImageUrlWire {
-    pub url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,30 +94,20 @@ pub(crate) fn build_supercloud_request(
     for m in history {
         match m {
             Message::User(parts) => {
-                let content: Vec<UserContentPart> = parts
-                    .into_iter()
-                    .filter_map(|p| match p {
-                        Content::Text { text } => {
-                            Some(UserContentPart::Text { text })
-                        }
-                        Content::Image(img) => {
-                            let url = match img.data {
-                                ImageData::Base64(b) => {
-                                    format!("data:{};base64,{}", img.mime_type, b)
-                                }
-                                ImageData::Url(u) => u,
-                            };
-                            Some(UserContentPart::ImageUrl {
-                                image_url: ImageUrlWire { url },
-                            })
-                        }
-                        Content::Document(_) => {
-                            // SuperCloud proxy may not support documents;
-                            // skip them silently.
-                            None
-                        }
-                    })
-                    .collect();
+                let content: Value = if parts.len() == 1 {
+                    if let Content::Text { text } = &parts[0] {
+                        // Single text part → plain string (not array)
+                        Value::String(text.clone())
+                    } else {
+                        // Single image → array with one element
+                        let arr: Vec<Value> = parts.into_iter().filter_map(|p| content_part_to_value(p)).collect();
+                        Value::Array(arr)
+                    }
+                } else {
+                    // Multiple parts → array
+                    let arr: Vec<Value> = parts.into_iter().filter_map(|p| content_part_to_value(p)).collect();
+                    Value::Array(arr)
+                };
                 messages.push(MessageWire::User { content });
             }
             Message::Assistant {
@@ -194,5 +175,24 @@ pub(crate) fn build_supercloud_request(
         model: model.to_string(),
         tools: tools_value,
         stream: if stream { Some(true) } else { None },
+    }
+}
+
+/// Convert a single agentix `Content` part into a JSON value for the
+/// OpenAI-compatible content array format.
+fn content_part_to_value(part: Content) -> Option<Value> {
+    match part {
+        Content::Text { text } => Some(Value::String(text)),
+        Content::Image(img) => {
+            let url = match img.data {
+                ImageData::Base64(b) => format!("data:{};base64,{}", img.mime_type, b),
+                ImageData::Url(u) => u,
+            };
+            Some(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": url }
+            }))
+        }
+        Content::Document(_) => None,
     }
 }
