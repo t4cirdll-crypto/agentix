@@ -319,6 +319,10 @@ pub enum Provider {
     #[cfg(feature = "codex")]
     #[serde(rename = "codex")]
     Codex,
+    /// SuperCloud (Render.com proxy for ConcentrateAI) — uses NDJSON format
+    /// with OAuth bearer token from `~/.better-auth/token.json`.
+    #[serde(rename = "supercloud")]
+    SuperCloud,
 }
 
 impl Provider {
@@ -339,6 +343,7 @@ impl Provider {
             Provider::ClaudeCode => "",
             #[cfg(feature = "codex")]
             Provider::Codex => "",
+            Provider::SuperCloud => "https://supercode-8w7e.onrender.com",
         }
     }
 
@@ -359,6 +364,7 @@ impl Provider {
             Provider::ClaudeCode => "sonnet",
             #[cfg(feature = "codex")]
             Provider::Codex => "gpt-5.5",
+            Provider::SuperCloud => "deepseek-v4-flash",
         }
     }
 }
@@ -546,6 +552,13 @@ impl Request {
     #[cfg(feature = "codex")]
     pub fn codex() -> Self {
         Self::new(Provider::Codex, String::new())
+    }
+
+    /// Shortcut for `Request::new(Provider::SuperCloud, api_key)`.
+    ///
+    /// The `api_key` is the OAuth bearer token from `~/.better-auth/token.json`.
+    pub fn supercloud(api_key: impl Into<String>) -> Self {
+        Self::new(Provider::SuperCloud, api_key)
     }
 
     // ── Builder setters (all consume & return Self) ──────────────────────
@@ -766,6 +779,16 @@ impl Request {
                 )
                 .await
             }
+            Provider::SuperCloud => {
+                crate::raw::supercloud::stream_supercloud(
+                    &self.api_key,
+                    http,
+                    &config,
+                    messages,
+                    tools,
+                )
+                .await
+            }
         }
     }
 
@@ -856,6 +879,16 @@ impl Request {
                     messages,
                     tools,
                     self.tool_choice.as_ref(),
+                )
+                .await
+            }
+            Provider::SuperCloud => {
+                crate::raw::supercloud::complete_supercloud(
+                    &self.api_key,
+                    http,
+                    &config,
+                    messages,
+                    tools,
                 )
                 .await
             }

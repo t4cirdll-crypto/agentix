@@ -21,6 +21,7 @@ pub mod mimo;
 pub mod openai;
 pub mod openrouter;
 pub mod shared;
+pub mod supercloud;
 
 pub use shared::{
     FunctionDefinition, FunctionName, JsonSchemaBody, ResponseFormat, ToolChoice,
