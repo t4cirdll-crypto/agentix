@@ -28,14 +28,17 @@ pub(crate) struct Request {
 /// A single message in the conversation, matching the OpenAI-compatible
 /// format that the SuperCloud proxy expects.
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "role", rename_all = "snake_case")]
 pub(crate) enum MessageWire {
+    #[serde(rename = "system")]
     System {
         content: String,
     },
+    #[serde(rename = "user")]
     User {
         content: Vec<UserContentPart>,
     },
+    #[serde(rename = "assistant")]
     Assistant {
         content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +46,7 @@ pub(crate) enum MessageWire {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCallWire>,
     },
+    #[serde(rename = "tool")]
     Tool {
         content: String,
         tool_call_id: String,
